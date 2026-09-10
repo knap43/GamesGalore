@@ -1,0 +1,2458 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Games Galore — Game Library</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* ---- Core palette ---- */
+    --bg-void:      #0a0810;
+    --bg-panel:     #130f1c;
+    --bg-panel-alt: #170f24;
+    --bg-card:      #1a1526;
+    --bg-card-top:  #201a2e;
+    --border-hair:  rgba(255,255,255,0.07);
+    --border-hair-2: rgba(255,255,255,0.12);
+
+    --text-primary: #f1edf7;
+    --text-muted:   #948da8;
+    --text-faint:   #5f5871;
+
+    --accent-pink:   #ff4f9e;
+    --accent-violet: #9b5cf6;
+    --accent-grad:   linear-gradient(135deg, #ff4f9e 0%, #9b5cf6 100%);
+    --accent-grad-soft: linear-gradient(135deg, rgba(255,79,158,0.35) 0%, rgba(155,92,246,0.35) 100%);
+
+    --radius-card: 10px;
+    --radius-pill: 999px;
+
+    --font-display: 'Space Grotesk', sans-serif;
+    --font-body: 'IBM Plex Sans', sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg-void);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    height: 100%;
+    overflow: hidden;
+  }
+
+  ::selection { background: rgba(255,79,158,0.35); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2a2338; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background: #372c49; background-clip: padding-box; }
+
+  /* ================= LAYOUT ================= */
+
+  .app {
+    display: grid;
+    grid-template-columns: 236px 1fr;
+    height: 100vh;
+  }
+
+  /* ---- Sidebar ---- */
+  .sidebar {
+    background: var(--bg-panel);
+    border-right: 1px solid var(--border-hair);
+    padding: 22px 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 26px;
+    min-height: 0;   /* grid items default to min-height:auto, which would
+                        otherwise let content push this taller instead of
+                        scrolling internally */
+    overflow-y: auto;
+  }
+
+  .nav-group { display: flex; flex-direction: column; gap: 2px; }
+  .nav-label {
+    font-size: 11px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    padding: 0 10px;
+    margin-bottom: 6px;
+  }
+  .nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    font-size: 13.5px;
+    color: var(--text-muted);
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: transparent;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .nav-item:hover { background: rgba(255,255,255,0.04); color: var(--text-primary); }
+  .nav-item:focus-visible { outline: 2px solid var(--accent-pink); outline-offset: 2px; }
+  .nav-item.active {
+    color: var(--text-primary);
+    background: linear-gradient(90deg, rgba(255,79,158,0.14), rgba(155,92,246,0.09));
+    border-color: rgba(255,79,158,0.18);
+  }
+  .nav-item .count {
+    font-size: 11px;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .nav-item.active .count { color: var(--accent-pink); }
+  .nav-item-inner { display: flex; align-items: center; }
+
+  .sidebar-footer {
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--bg-panel-alt);
+    border: 1px solid var(--border-hair);
+    font-size: 12px;
+    color: var(--text-faint);
+    line-height: 1.5;
+  }
+  .sidebar-footer strong { color: var(--text-muted); font-weight: 500; }
+
+  #settings-nav { margin-top: auto; }
+  .settings-icon { width: 15px; height: 15px; margin-right: 8px; flex-shrink: 0; }
+
+  /* ================= SETTINGS MODAL ================= */
+
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(5,3,8,0.65);
+    backdrop-filter: blur(3px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  .modal {
+    width: 100%;
+    max-width: 560px;
+    max-height: 85vh;
+    overflow-y: auto;
+    margin: 0 20px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-hair-2);
+    border-radius: 14px;
+    padding: 22px 24px;
+    box-shadow: 0 30px 60px -20px rgba(0,0,0,0.6);
+  }
+  .modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 18px;
+  }
+  .modal-header h2 {
+    font-family: var(--font-display);
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .modal-close {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 6px;
+    display: flex;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+  .modal-close:hover { color: var(--text-primary); background: rgba(255,255,255,0.06); }
+  .modal-close:focus-visible { outline: 2px solid var(--accent-pink); outline-offset: 2px; }
+  .modal-close svg { width: 16px; height: 16px; }
+
+  .setting-block {
+    padding-bottom: 18px;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--border-hair);
+  }
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+  .setting-label { display: block; font-size: 13.5px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; }
+  .setting-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }
+
+  .setting-input {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair-2);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 13px;
+    padding: 9px 12px;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+  .setting-input::placeholder { color: var(--text-faint); }
+  .setting-input:focus-visible { border-color: rgba(255,79,158,0.45); }
+  .setting-input-row { display: flex; gap: 8px; }
+  .setting-input-row .setting-input { flex: 1; }
+
+  .browse-button {
+    flex-shrink: 0;
+    padding: 9px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border-hair-2);
+    background: var(--bg-card);
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  }
+  .browse-button:hover { background: var(--bg-card-top); color: var(--text-primary); }
+  .browse-button:focus-visible { outline: 2px solid var(--accent-violet); outline-offset: 2px; border-color: transparent; }
+
+  .setting-desc code, .emulator-fields-row code {
+    background: rgba(255,255,255,0.06);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 11.5px;
+    color: var(--text-primary);
+  }
+
+  .emulator-row {
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    margin-bottom: 10px;
+  }
+  .emulator-row-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .emulator-name { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+  .dependency-status {
+    font-size: 11.5px;
+    padding: 3px 9px;
+    border-radius: var(--radius-pill);
+    background: rgba(255,255,255,0.06);
+    color: var(--text-faint);
+    white-space: nowrap;
+  }
+  .dependency-status.checking { color: var(--text-muted); }
+  .dependency-status.found { color: #a8f0c6; background: rgba(52,199,132,0.14); }
+  .dependency-status.missing { color: #ffb4b4; background: rgba(255,79,79,0.12); }
+
+  .emulator-fields { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .emulator-fields-row { display: flex; align-items: center; gap: 8px; }
+  .emulator-fields-row .setting-input { flex: 1; }
+  .emulator-fields-row .setting-desc { flex: 1; }
+
+  .toggle-switch {
+    flex-shrink: 0;
+    width: 42px;
+    height: 24px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-hair-2);
+    background: var(--bg-card);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+  .toggle-switch:focus-visible { outline: 2px solid var(--accent-violet); outline-offset: 3px; }
+  .toggle-switch.on { background: var(--accent-grad); border-color: transparent; }
+  .toggle-knob {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.18s cubic-bezier(.2,.7,.3,1);
+  }
+  .toggle-switch.on .toggle-knob { transform: translateX(18px); }
+
+  /* ---- Main ---- */
+  .main {
+    padding: 26px 36px 50px;
+    min-height: 0;
+    /* Reverted from `scroll` back to `auto`, as a direct test: cards,
+       screenshots, thumbnails, and the play/install/uninstall buttons
+       all live inside .main and were the only elements triggering a
+       scrollbar flash on focus — everything unaffected (sidebar,
+       settings) lives outside it. `scroll` was forcing the scrollbar
+       to always render, which was the fix for an earlier shaking bug
+       — but that bug's actual root cause (inconsistent spacer-height
+       math toggling the "needs a scrollbar" threshold) has since been
+       fixed independently via the hysteresis check in
+       renderVirtualWindow(), so reverting this specific property is a
+       reasonable thing to test without expecting the shaking to
+       return. If it does return, that means `scroll` was doing more
+       work than assumed and this needs to go back. */
+    overflow-y: auto;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 28px;
+  }
+
+  .heading h1 {
+    font-family: var(--font-display);
+    font-size: 26px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  .heading p {
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  .heading p span { color: var(--text-primary); font-weight: 500; }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .search-wrap {
+    position: relative;
+    width: 100%;
+  }
+  .search-wrap input {
+    width: 100%;
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 13px;
+    padding: 9px 12px 9px 32px;
+    outline: none;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .search-wrap input::placeholder { color: var(--text-faint); }
+  .search-wrap input:focus {
+    border-color: rgba(255,79,158,0.45);
+    background: var(--bg-card-top);
+  }
+  .search-wrap svg {
+    position: absolute;
+    left: 11px; top: 50%;
+    transform: translateY(-50%);
+    width: 14px; height: 14px;
+    stroke: var(--text-faint);
+  }
+
+  .sort-select {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: 8px;
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    font-size: 13px;
+    padding: 9px 12px;
+    outline: none;
+    cursor: pointer;
+  }
+  .sort-select:focus { border-color: rgba(255,79,158,0.45); }
+
+  /* ---- Grid ---- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    gap: 22px 18px;
+  }
+
+  .card {
+    position: relative;
+    z-index: 0; /* establishes this card's own stacking context, so the
+                   glow pseudo-element below (z-index: -1) stays behind
+                   just this card's own content rather than risking
+                   falling behind sibling cards in the grid */
+    cursor: pointer;
+    transform: translateY(0);
+    transition: transform 0.22s cubic-bezier(.2,.7,.3,1);
+  }
+  .card:focus-visible { outline: 2px solid var(--accent-pink); outline-offset: 4px; border-radius: var(--radius-card); }
+
+  .card::before {
+    /* Glow via box-shadow rather than filter:blur() or a flat gradient
+       panel — box-shadow's blur is a fundamentally cheaper operation
+       than filter (no offscreen render/post-process step), and unlike
+       the earlier filter-based version, the cost here only exists on
+       whichever single card is actually being hovered, not all 100+
+       simultaneously-rendered ones permanently. The shape itself is
+       fully transparent — only its shadow is visible — so this reads
+       as an actual soft halo rather than a hard-edged colored panel.
+       box-shadow is always declared, at zero spread/alpha, rather than
+       toggled on/off — same reasoning as the filter fix earlier: a
+       transition can only animate a property's value changing, not
+       its presence, or hover-out would flash the same way. */
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 79%;
+    border-radius: calc(var(--radius-card) + 8px);
+    background: transparent;
+    box-shadow: 0 0 0 0 rgba(255,79,158,0), 0 0 0 0 rgba(155,92,246,0);
+    transition: box-shadow 0.28s ease;
+    z-index: -1;
+    pointer-events: none;
+  }
+  .card:hover::before,
+  .card:focus-visible::before {
+    box-shadow: 0 0 30px 4px rgba(255,79,158,0.4), 0 0 55px 10px rgba(155,92,246,0.28);
+  }
+
+  .card:hover,
+  .card:focus-visible {
+    transform: translateY(-7px);
+  }
+
+  .cover {
+    position: relative;
+    z-index: 1;
+    aspect-ratio: 3 / 4;
+    border-radius: var(--radius-card);
+    border: 1px solid var(--border-hair-2);
+    overflow: hidden;
+    display: flex;
+    align-items: flex-end;
+    box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset;
+    transition: border-color 0.22s ease, box-shadow 0.22s ease;
+  }
+  .card:hover .cover,
+  .card:focus-visible .cover {
+    border-color: rgba(255,255,255,0.22);
+    box-shadow: 0 0 0 1px rgba(255,79,158,0.25) inset, 0 14px 30px -12px rgba(0,0,0,0.6);
+  }
+
+
+  .cover-image {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    /* object-fit:cover crops to fill the tile while preserving aspect
+       ratio — switched from fill (non-uniform stretch) since actual
+       cover art distorted noticeably that way. contain was the other
+       option but would letterbox mismatched images and show the
+       gradient placeholder bleeding through the gaps, which reads
+       worse on a dense grid than a slight crop does. */
+    object-fit: cover;
+    z-index: 0;
+  }
+
+  .cover .monogram {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%,-52%);
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 58px;
+    opacity: 0.16;
+    letter-spacing: -0.02em;
+    color: #fff;
+    user-select: none;
+    transition: opacity 0.22s ease, transform 0.22s ease;
+  }
+  .card:hover .monogram, .card:focus-visible .monogram {
+    opacity: 0.26;
+    transform: translate(-50%,-56%) scale(1.04);
+  }
+
+  .cover .badge {
+    position: relative;
+    z-index: 2;
+    margin: 9px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 7px;
+    border-radius: var(--radius-pill);
+    background: rgba(0,0,0,0.6);
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+  }
+  .badge.recent { color: #ffd7ea; background: rgba(255,79,158,0.32); }
+
+  .platform-tag {
+    position: absolute;
+    z-index: 2;
+    top: 9px;
+    left: 9px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 7px;
+    border-radius: var(--radius-pill);
+    background: rgba(0,0,0,0.6);
+    color: var(--text-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .meta {
+    padding-top: 10px;
+    position: relative;
+    z-index: 1;
+  }
+  .meta .title {
+    font-size: 13.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    line-height: 1.3;
+    margin: 0 0 4px;
+    transition: color 0.2s ease;
+  }
+  .card:hover .meta .title, .card:focus-visible .meta .title {
+    background: var(--accent-grad);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .meta .sub {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+  .meta .sub .dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-faint); }
+
+  .empty-state {
+    grid-column: 1 / -1;
+    text-align: center;
+    padding: 70px 20px;
+    color: var(--text-muted);
+    font-size: 14px;
+  }
+  .empty-state strong { display: block; color: var(--text-primary); font-family: var(--font-display); font-size: 17px; margin-bottom: 6px; font-weight: 600; }
+
+  /* ================= DETAIL VIEW ================= */
+
+  #view-detail { display: none; }
+
+  .detail-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-family: var(--font-body);
+    font-size: 13px;
+    cursor: pointer;
+    padding: 0;
+    margin-bottom: 22px;
+    transition: color 0.15s ease, gap 0.15s ease;
+  }
+  .detail-back:hover { color: var(--text-primary); gap: 10px; }
+  .detail-back svg { width: 14px; height: 14px; stroke: currentColor; }
+
+  .detail-header { margin-bottom: 20px; }
+  .detail-title {
+    font-family: var(--font-display);
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 8px;
+  }
+  .detail-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+  .detail-meta .genre-pill {
+    padding: 3px 10px;
+    border-radius: var(--radius-pill);
+    background: rgba(255,79,158,0.14);
+    color: #ffb8dc;
+    font-weight: 500;
+    font-size: 11.5px;
+  }
+  .detail-meta .dot-sep { width: 3px; height: 3px; border-radius: 50%; background: var(--text-faint); }
+
+  .cta-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin-bottom: 22px;
+  }
+  .cta-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 15px 32px;
+    border-radius: 10px;
+    border: 2px solid rgba(255,255,255,0.3);
+    font-family: var(--font-body);
+    font-size: 15.5px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    color: #fff;
+    background: var(--accent-grad);
+    transition: transform 0.16s ease, box-shadow 0.16s ease, filter 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    box-shadow: 0 12px 28px -12px rgba(255,79,158,0.6);
+  }
+  .cta-button:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.55); }
+  .cta-button:active { transform: translateY(0); }
+  .cta-button:disabled { cursor: default; opacity: 0.75; transform: none; filter: none; }
+  .cta-button:focus-visible { outline: 2px solid var(--accent-violet); outline-offset: 4px; }
+  .cta-button.cta-uninstall {
+    background: var(--bg-card);
+    border: 2px solid var(--border-hair-2);
+    color: var(--text-muted);
+    box-shadow: none;
+  }
+  .cta-button.cta-uninstall:hover {
+    background: var(--bg-card-top);
+    border-color: var(--border-hair-2);
+    color: var(--text-primary);
+    filter: none;
+  }
+  .game-size {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .cta-button svg { width: 17px; height: 17px; fill: currentColor; }
+
+  .install-progress {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .install-progress-track {
+    flex: 1;
+    height: 6px;
+    border-radius: var(--radius-pill);
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    overflow: hidden;
+  }
+  .install-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent-grad);
+    border-radius: var(--radius-pill);
+    transition: width 0.25s ease;
+  }
+  .install-progress-label {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .install-error {
+    padding: 10px 14px;
+    border-radius: 8px;
+    background: rgba(255,79,79,0.1);
+    border: 1px solid rgba(255,79,79,0.25);
+    color: #ffb4b4;
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin-bottom: 18px;
+    word-break: break-word;
+  }
+
+  .viewer {
+    position: relative;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--border-hair-2);
+    aspect-ratio: 16 / 9;
+    background: #050308;
+    margin-bottom: 24px;
+    box-shadow: 0 20px 50px -25px rgba(0,0,0,0.7);
+  }
+  .viewer:focus-visible {
+    outline: 2px solid var(--accent-pink);
+    outline-offset: 3px;
+  }
+  .viewer-nav-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 18%;
+    min-width: 44px;
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    color: rgba(255,255,255,0.85);
+    opacity: 0;
+    transition: opacity 0.18s ease;
+    z-index: 4;
+  }
+  .viewer-nav-zone svg { width: 26px; height: 26px; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
+  .viewer-nav-prev {
+    left: 0;
+    justify-content: flex-start;
+    padding-left: 14px;
+    background: linear-gradient(to right, rgba(0,0,0,0.4), transparent);
+  }
+  .viewer-nav-next {
+    right: 0;
+    justify-content: flex-end;
+    padding-right: 14px;
+    background: linear-gradient(to left, rgba(0,0,0,0.4), transparent);
+  }
+  .viewer:hover .viewer-nav-zone.enabled { opacity: 1; }
+  .viewer-nav-zone.disabled { cursor: default; pointer-events: none; }
+  .viewer-media {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: opacity 0.18s ease;
+  }
+  .viewer-media .monogram-lg {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 120px;
+    color: #fff;
+    opacity: 0.14;
+    letter-spacing: -0.02em;
+    user-select: none;
+  }
+  .viewer-media .frame-label {
+    position: absolute;
+    bottom: 14px;
+    left: 16px;
+    font-size: 11.5px;
+    color: rgba(255,255,255,0.55);
+    letter-spacing: 0.02em;
+  }
+  .viewer-media .trailer-tag {
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: var(--radius-pill);
+    background: rgba(255,79,158,0.22);
+    color: #ffd7ea;
+    letter-spacing: 0.03em;
+  }
+  .play-button {
+    width: 62px; height: 62px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.1);
+    border: 1.5px solid rgba(255,255,255,0.35);
+    backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+  }
+  .play-button:hover {
+    transform: scale(1.08);
+    background: var(--accent-grad);
+    border-color: transparent;
+  }
+  .play-button svg { width: 20px; height: 20px; fill: #fff; margin-left: 3px; }
+
+  .thumb-strip {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    overflow-y: visible;
+    padding: 16px 8px 14px;
+    margin-bottom: 30px;
+  }
+  .thumb {
+    flex: 0 0 116px;
+    aspect-ratio: 16 / 9;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    position: relative;
+    overflow: hidden;
+    background: var(--bg-card);
+    transition: border-color 0.18s ease, transform 0.18s ease, opacity 0.18s ease;
+    opacity: 0.65;
+  }
+  .thumb img, .thumb video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+  .thumb:hover { opacity: 0.9; transform: translateY(-2px); }
+  .thumb.active { opacity: 1; border-color: var(--accent-pink); }
+  .thumb:focus-visible { opacity: 1; outline: 2px solid var(--accent-pink); outline-offset: 3px; }
+  .thumb .t-monogram {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 20px;
+    color: #fff;
+    opacity: 0.35;
+  }
+  .thumb .t-play {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%,-50%);
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.5);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .thumb .t-play svg { width: 7px; height: 7px; fill: #fff; margin-left: 1px; }
+
+  .description-label {
+    font-size: 11px;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    margin-bottom: 8px;
+  }
+  .description {
+    max-width: 680px;
+    font-size: 14px;
+    line-height: 1.75;
+    color: var(--text-muted);
+  }
+
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { display: none; }
+    .main { padding: 20px; }
+    .topbar { flex-direction: column; align-items: flex-start; }
+    .thumb { flex-basis: 92px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ================= SIDEBAR ================= -->
+  <aside class="sidebar">
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input id="search" type="text" placeholder="Search your library…" autocomplete="off">
+    </div>
+
+    <nav class="nav-group" id="platform-nav">
+      <div class="nav-label">Platforms</div>
+      <!-- platform items injected by JS -->
+    </nav>
+
+    <nav class="nav-group" id="status-nav">
+      <div class="nav-label">Status</div>
+      <!-- status items injected by JS -->
+    </nav>
+
+    <nav class="nav-group" id="settings-nav">
+      <div class="nav-item" data-type="settings" tabindex="0" role="button">
+        <span class="nav-item-inner">
+          <svg class="settings-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          Settings
+        </span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer" id="sidebar-footer"></div>
+  </aside>
+
+  <!-- ================= SETTINGS MODAL ================= -->
+  <div class="modal-backdrop" id="settings-backdrop" style="display:none">
+    <div class="modal" role="dialog" aria-label="Settings">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button class="modal-close" id="settings-close" aria-label="Close settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+
+      <div class="setting-block">
+        <label class="setting-label" for="server-base-input">Library server address</label>
+        <div class="setting-desc">The Python server's address on your network, e.g. http://192.168.1.20:8420</div>
+        <input class="setting-input" id="server-base-input" type="text" placeholder="http://192.168.1.20:8420" autocomplete="off">
+      </div>
+
+      <div class="setting-block">
+        <label class="setting-label" for="install-root-input">Install directory</label>
+        <div class="setting-desc">Where downloaded games are stored on this machine.</div>
+        <div class="setting-input-row">
+          <input class="setting-input" id="install-root-input" type="text" placeholder="/home/you/Games" autocomplete="off">
+          <button class="browse-button" id="browse-install-root" type="button">Browse…</button>
+        </div>
+      </div>
+
+      <div class="setting-block">
+        <label class="setting-label">Emulators &amp; dependencies</label>
+        <div class="setting-desc">
+          Command and arguments used to launch each platform. For a native install, Command is
+          just the binary name or path. For a Flatpak — likely for PCSX2 and Eden — set Command to
+          <code>flatpak</code> and Args to <code>run &lt;app-id&gt; --</code>, e.g.
+          <code>run net.pcsx2.PCSX2 --</code>. "Check" tests the values currently typed here, not
+          what's saved yet.
+        </div>
+        <div id="emulator-rows"></div>
+        <div class="emulator-row" data-row="server-nsz">
+          <div class="emulator-row-header">
+            <span class="emulator-name">Library server (nsz)</span>
+            <span class="dependency-status" data-status>Not checked</span>
+          </div>
+          <div class="emulator-fields-row">
+            <span class="setting-desc" style="margin:0;">Checks whether the server itself has <code>nsz</code> available for Switch conversions.</span>
+            <button class="browse-button emu-check" type="button" data-check="server-nsz">Check</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="setting-text">
+          <div class="setting-label">Controller &amp; keyboard sounds</div>
+          <div class="setting-desc">Plays a short sound when navigating or selecting with a gamepad or keyboard. Mouse clicks stay silent.</div>
+        </div>
+        <button class="toggle-switch" id="sound-toggle" role="switch" aria-checked="true" tabindex="0">
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= MAIN ================= -->
+  <main class="main">
+
+    <!-- ---- Library grid view ---- -->
+    <div id="view-library">
+      <div class="topbar">
+        <div class="heading">
+          <h1>Your Library</h1>
+          <p><span id="visible-count">0</span> of <span id="total-count">0</span> games</p>
+        </div>
+      </div>
+
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <!-- ---- Game detail view ---- -->
+    <div id="view-detail">
+      <button class="detail-back" id="detail-back">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        Back to library
+      </button>
+
+      <div class="detail-header">
+        <h1 class="detail-title" id="detail-title"></h1>
+        <div class="detail-meta" id="detail-meta"></div>
+      </div>
+
+      <div class="cta-row">
+        <button class="cta-button" id="cta-button"></button>
+        <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
+        <span class="game-size" id="game-size"></span>
+      </div>
+
+      <div class="install-progress" id="install-progress" style="display:none">
+        <div class="install-progress-track">
+          <div class="install-progress-fill" id="install-progress-fill"></div>
+        </div>
+        <span class="install-progress-label" id="install-progress-label"></span>
+        <button class="browse-button" id="cancel-install-button" type="button">Cancel</button>
+      </div>
+
+      <div class="install-error" id="install-error" style="display:none"></div>
+
+      <div class="viewer" id="viewer" tabindex="0" role="group" aria-label="Screenshots and trailer">
+        <div class="viewer-media" id="viewer-media"></div>
+        <div class="viewer-nav-zone viewer-nav-prev" data-nav="prev" aria-label="Previous screenshot">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+        </div>
+        <div class="viewer-nav-zone viewer-nav-next" data-nav="next" aria-label="Next screenshot">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+        </div>
+      </div>
+
+      <div class="thumb-strip" id="thumb-strip"></div>
+
+      <div>
+        <div class="description-label">About this game</div>
+        <p class="description" id="description"></p>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+/*
+ * ---------------------------------------------------------------
+ * DATA LAYER
+ * ---------------------------------------------------------------
+ * In an Electron build, GAMES would not be a literal array — this
+ * function would become an async call bridged through a preload
+ * script, e.g.:
+ *
+ *   async function loadGames() {
+ *     return await window.api.invoke('library:get-games');
+ *   }
+ *
+ * ...where 'library:get-games' is an ipcMain handler in the main
+ * process querying SQLite. Everything below (render, filter, sort)
+ * is written against the shape of this array, so that swap is the
+ * only thing that would need to change.
+ * ---------------------------------------------------------------
+ */
+
+const GENRE_STYLES = {
+  RPG:        { grad: 'linear-gradient(160deg, #0f2e2b 0%, #0a1614 100%)' },
+  Strategy:   { grad: 'linear-gradient(160deg, #14213d 0%, #0a1120 100%)' },
+  Shooter:    { grad: 'linear-gradient(160deg, #2c1518 0%, #150a0c 100%)' },
+  Horror:     { grad: 'linear-gradient(160deg, #1f0f16 0%, #0e0709 100%)' },
+  Adventure:  { grad: 'linear-gradient(160deg, #2a2110 0%, #160f08 100%)' },
+  Indie:      { grad: 'linear-gradient(160deg, #241a30 0%, #120c1a 100%)' },
+  Simulation: { grad: 'linear-gradient(160deg, #12262c 0%, #081215 100%)' },
+  Racing:     { grad: 'linear-gradient(160deg, #2b1a0c 0%, #160d06 100%)' },
+  Puzzle:     { grad: 'linear-gradient(160deg, #251c2e 0%, #130e18 100%)' },
+  Sports:     { grad: 'linear-gradient(160deg, #0e2417 0%, #08130c 100%)' },
+  Action:     { grad: 'linear-gradient(160deg, #2d1122 0%, #170912 100%)' },
+};
+
+/* Mock catalog, used only as a browser-preview fallback when this file
+   isn't running inside the actual Tauri app (see loadGames() below).
+   Note the schema gap versus real data: genre, hours, and lastPlayed
+   are mock-only conveniences the server doesn't track — every place
+   that reads them checks for their presence first rather than
+   assuming they exist. */
+const MOCK_GAMES = [
+  { title: 'Hollow Meridian',     genre: 'RPG',        hours: 76, lastPlayedDaysAgo: 0,  platform: 'PC', sizeGB: 38.4 },
+  { title: 'Ironclad Vanguard',   genre: 'Strategy',    hours: 65, lastPlayedDaysAgo: 2,  platform: 'PC', sizeGB: 12.1 },
+  { title: 'Ashfall Chronicles',  genre: 'RPG',        hours: 42, lastPlayedDaysAgo: 5,  platform: 'PS2', sizeGB: 3.8 },
+  { title: 'Paperclip Dynasty',   genre: 'Strategy',    hours: 51, lastPlayedDaysAgo: 9,  platform: 'PC', sizeGB: 6.7 },
+  { title: 'Deadlight Protocol',  genre: 'Shooter',     hours: 38, lastPlayedDaysAgo: 1,  platform: 'PS2', sizeGB: 4.2 },
+  { title: 'Scrapyard Legion',    genre: 'Shooter',     hours: 31, lastPlayedDaysAgo: 14, platform: 'PC', sizeGB: 15.9 },
+  { title: 'Crimson Undertow',    genre: 'Action',      hours: 27, lastPlayedDaysAgo: 6,  platform: 'Switch', sizeGB: 8.3 },
+  { title: 'Glasswing Requiem',   genre: 'Adventure',   hours: 23, lastPlayedDaysAgo: 20, platform: 'PS1', sizeGB: 0.6 },
+  { title: 'Voltgrid Arena',      genre: 'Sports',      hours: 22, lastPlayedDaysAgo: 3,  platform: 'Switch', sizeGB: 5.1 },
+  { title: 'Tidebreaker',         genre: 'Simulation',  hours: 19, lastPlayedDaysAgo: 30, platform: 'PC', sizeGB: 9.4 },
+  { title: 'Static Choir',        genre: 'Adventure',   hours: 14, lastPlayedDaysAgo: 45, platform: 'PS1', sizeGB: 0.5 },
+  { title: 'Nebula Drift',        genre: 'Racing',      hours: 12, lastPlayedDaysAgo: 11, platform: 'PS1', sizeGB: 0.4 },
+  { title: 'Wraith Hollow',       genre: 'Horror',      hours: 8,  lastPlayedDaysAgo: 60, platform: 'PS2', sizeGB: 2.9 },
+  { title: 'Bramblewood',         genre: 'Indie',       hours: 6,  lastPlayedDaysAgo: 40, platform: 'Switch', sizeGB: 1.2 },
+  { title: 'Ferrofluid',          genre: 'Puzzle',      hours: 5,  lastPlayedDaysAgo: 25, platform: 'Switch', sizeGB: 0.8, installed: false },
+  { title: 'Moth & Ember',        genre: 'Indie',       hours: 3,  lastPlayedDaysAgo: 70, platform: 'PC', sizeGB: 0.3, installed: false },
+].map((g, i) => ({ installed: true, ...g, id: String(i) }));
+
+let GAMES = [];
+let isLoading = true; // true until loadGames() resolves, so the empty
+                       // grid reads as "loading", not "no matches"
+
+/* ---------------------------------------------------------------
+ * GRID VIRTUALIZATION
+ * ---------------------------------------------------------------
+ * Only the rows actually within (or near) the visible scroll viewport
+ * are ever real DOM nodes — with a 500+ game library, rendering every
+ * card unconditionally meant 500+ permanently-live elements each with
+ * their own gradient background, hover transitions, and (until the
+ * previous pass) always-on compositing effects, regardless of whether
+ * any of them were ever scrolled into view. This is what actually
+ * fixes that, rather than trimming what each individual card costs.
+ *
+ * virtualGames is the full filtered/sorted list — the source of truth
+ * for indices — independent of which slice of it is currently
+ * rendered into #grid at any moment.
+ * --------------------------------------------------------------- */
+let virtualGames = [];
+let virtualCols = 1;
+let virtualRowHeight = 0;
+const VIRTUAL_ROW_BUFFER = 3; // extra rows rendered above/below the viewport.
+                               // The scroll-driven flicker this was widened to 5
+                               // to fight turned out to actually be caused by
+                               // re-rendering on every scroll tick regardless of
+                               // whether anything visible had changed — fixed
+                               // properly via the hysteresis check in
+                               // renderVirtualWindow() below, which makes a large
+                               // buffer unnecessary for that purpose. 3 keeps
+                               // enough margin for genuinely fast scrolling
+                               // without rendering (and holding in GPU memory)
+                               // far more cards than are ever actually useful.
+
+const PLATFORM_ORDER = ['PS1', 'PS2', 'PC', 'Switch'];
+
+/* Generic per-genre blurb templates — used only for mock games, which
+   have no real description. Real games carry an actual `description`
+   straight from the server's README parse; see getDescription(). */
+const GENRE_BLURBS = {
+  RPG:        t => `${t} builds a sprawling world around branching quests, gear progression, and choices that ripple through later chapters. Between the main storyline and its optional systems, most players find a second run plays out meaningfully differently from the first.`,
+  Strategy:   t => `${t} is a slower-burn game of resource management and long-range planning, where an early misstep can take a dozen turns to recover from. It rewards patience over reflexes, and replaying with a different opening strategy rarely produces the same outcome twice.`,
+  Shooter:    t => `${t} keeps encounters short, mobile, and lethal, with a moment-to-moment loop built around positioning and ammo economy rather than raw reaction speed. Its levels are designed to be replayed for time and route rather than cleared once.`,
+  Horror:     t => `${t} leans on restraint — sparse resources, limited visibility, and sound design doing most of the work. It's built to be played in one sitting, in the dark, and loses very little of its tension on a second run.`,
+  Adventure:  t => `${t} is a slower, exploration-driven game where the map matters as much as any single objective. Its pacing rewards wandering off the critical path, and several of its best moments are easy to miss on a first playthrough.`,
+  Indie:      t => `${t} is a small, focused experience built around one central mechanic rather than a long feature list. It runs light, plays in short sessions, and doesn't overstay the idea it's built on.`,
+  Simulation: t => `${t} trades objectives for systems — a set of interlocking mechanics you're left to optimize at your own pace. There's no fixed end point; most of the game's depth shows up after the first few hours, once the basics stop needing attention.`,
+  Racing:     t => `${t} is built around tight circuits and a handling model with a real learning curve — shaving seconds off a lap matters more than finishing first once. Its short race lengths make it easy to fit into a spare ten minutes.`,
+  Puzzle:     t => `${t} introduces one mechanic early and spends the rest of the game recombining it in less obvious ways. Levels are short by design, so the difficulty comes from the idea rather than the execution.`,
+  Sports:     t => `${t} focuses on tight, replayable matches over a long season structure, with most of its depth sitting in player positioning and timing rather than a large roster of modes.`,
+  Action:     t => `${t} moves fast and punishes hesitation, built around a combat system with enough depth to reward experimenting with different approaches to the same fight.`,
+};
+
+function getBlurb(game) {
+  const fn = GENRE_BLURBS[game.genre] || GENRE_BLURBS.Indie;
+  return fn(game.title);
+}
+
+/* Real games already carry a proper description (README, parsed
+   server-side); only mock games need one synthesized from genre. */
+function getDescription(game) {
+  return game.description || getBlurb(game);
+}
+
+/* Real games report per-file size_bytes from the source library; mock
+   games carry a plain sizeGB number. Note for real Switch titles: this
+   sums the on-disk (compressed, for .nsz) size, not the eventual
+   installed size — see library.py's GameFile.size_bytes comment. */
+function getSizeGB(game) {
+  if (typeof game.sizeGB === 'number') return game.sizeGB;
+  if (Array.isArray(game.files)) {
+    const totalBytes = game.files.reduce((sum, f) => sum + (f.size_bytes || 0), 0);
+    return totalBytes / 1e9;
+  }
+  return 0;
+}
+
+/* Builds the detail view's media list. Real games carry actual
+   screenshot/trailer URLs from the server and render as real
+   <img>/<video> elements. Mock games (browser-preview only) get a
+   small synthesized placeholder set instead, since there's nothing
+   real to show. */
+function buildMedia(game) {
+  const hasRealScreenshots = Array.isArray(game.screenshots) && game.screenshots.length > 0;
+  if (hasRealScreenshots) {
+    const items = [];
+    if (game.trailer) items.push({ type: 'trailer', label: 'Trailer', url: game.trailer });
+    game.screenshots.forEach((url, i) => items.push({ type: 'screenshot', label: `Screenshot ${i + 1}`, url }));
+    return items;
+  }
+  const items = [{ type: 'trailer', label: 'Trailer' }];
+  for (let i = 0; i < 4; i++) {
+    items.push({ type: 'screenshot', label: `Screenshot ${i + 1}`, hue: i * 26 });
+  }
+  return items;
+}
+
+/* ---------------------------------------------------------------
+ * LOADING THE CATALOG
+ * ---------------------------------------------------------------
+ * Real mode: fetch the catalog from the Python server, then hydrate
+ * install status for each game from the local record. Preview mode
+ * (no Tauri runtime): fall back to the mock catalog untouched.
+ * --------------------------------------------------------------- */
+async function loadGames() {
+  if (!TAURI) {
+    GAMES = MOCK_GAMES;
+    return;
+  }
+
+  try {
+    GAMES = await TAURI.core.invoke('fetch_library', { serverBase: state.serverBase });
+  } catch (err) {
+    console.error('failed to fetch library', err);
+    GAMES = [];
+  }
+
+  let installStates = {};
+  try {
+    installStates = await TAURI.core.invoke('get_install_states');
+  } catch (err) {
+    console.error('failed to fetch install states', err);
+  }
+  GAMES.forEach(g => applyInstallStatus(g, installStates[g.id]));
+}
+
+/* Applies one InstallStatus (from Rust) onto a game object, in place.
+   Shared by the initial hydration above and the live event listener
+   below, so both paths update a game's install fields identically. */
+function applyInstallStatus(game, status) {
+  if (!status || status.status === 'not_installed') {
+    game.installed = false;
+    game.localDir = null;
+    game.installProgress = null;
+    game.installError = null;
+  } else if (status.status === 'downloading') {
+    game.installed = false;
+    game.installProgress = status;
+    game.installError = null; // a fresh attempt in progress supersedes any previous failure
+  } else if (status.status === 'installed') {
+    game.installed = true;
+    game.localDir = status.local_dir;
+    game.installProgress = null;
+    game.installError = null;
+  } else if (status.status === 'failed') {
+    game.installed = false;
+    game.installProgress = null;
+    game.installError = status.message;
+  }
+}
+
+/* Re-renders everything that could be showing this game's install
+   state right now: the detail CTA row if it's the open game, plus the
+   grid/sidebar/footer, all of which reflect installed counts. */
+function refreshInstallDependentUI(gameId) {
+  const game = GAMES.find(g => g.id === gameId);
+  if (game && currentDetailId === gameId) renderCtaRow(game);
+  renderGrid();
+  renderStatusNav();
+  renderSidebarFooter();
+}
+
+/* Live updates while the app is running: install_game keeps emitting
+   progress as it downloads each file, long after the invoke() call
+   below has already returned or is still pending. Registered from
+   init() rather than run at top level, since it references TAURI,
+   which isn't declared until further down the file. */
+function setupInstallStatusListener() {
+  if (!TAURI) return;
+  TAURI.event.listen('install:status', (event) => {
+    const [id, status] = event.payload;
+    const game = GAMES.find(g => g.id === id);
+    if (!game) return;
+    applyInstallStatus(game, status);
+    refreshInstallDependentUI(id);
+  });
+}
+
+function installGame(game) {
+  if (!TAURI) {
+    // Browser-preview fallback: no server to actually install from,
+    // so simulate completion instantly rather than doing nothing.
+    game.installed = true;
+    refreshInstallDependentUI(game.id);
+    return;
+  }
+  if (!state.serverBase || !state.installRoot) {
+    alert('Set the library server address and install directory in Settings first.');
+    return;
+  }
+  // Progress arrives via the "install:status" listener above, not the
+  // resolution of this promise — this can take a long time for a large
+  // game, and the UI shouldn't sit frozen waiting on it.
+  TAURI.core.invoke('install_game', {
+    game,
+    serverBase: state.serverBase,
+    installRoot: state.installRoot,
+  }).catch(err => console.error('install failed', err));
+}
+
+function uninstallGame(game) {
+  if (!TAURI) {
+    game.installed = false;
+    refreshInstallDependentUI(game.id);
+    return;
+  }
+  TAURI.core.invoke('uninstall_game', { gameId: game.id })
+    .catch(err => console.error('uninstall failed', err));
+}
+
+function cancelInstall(game) {
+  if (!TAURI) {
+    // Browser-preview fallback: no real download to interrupt, but
+    // clear whatever progress state the mock toggle put it in.
+    game.installProgress = null;
+    refreshInstallDependentUI(game.id);
+    return;
+  }
+  // Covers both an actively-running download (the flag this sets stops
+  // it cooperatively on its next chunk) and one that's stuck — e.g. the
+  // app was closed mid-download last session and this game has read
+  // "Downloading..." ever since with nothing actually running anymore.
+  // Same command, same server-side cleanup either way.
+  TAURI.core.invoke('cancel_install', { gameId: game.id, installRoot: state.installRoot })
+    .catch(err => console.error('cancel failed', err));
+}
+
+function launchGame(game) {
+  if (!TAURI) return; // nothing to actually launch in a browser preview
+  if (!game.localDir) {
+    console.error('no local install path recorded for', game.id);
+    return;
+  }
+  TAURI.core.invoke('launch_game', { installDir: game.localDir, platform: game.platform })
+    .catch(err => console.error('launch failed', err));
+}
+
+/* ---------------------------------------------------------------
+ * STATE
+ * --------------------------------------------------------------- */
+let state = {
+  platforms: new Set(),   // empty = every platform
+  installedOnly: false,
+  query: '',
+  sort: 'alpha', // no UI to change this now the dropdown's removed; alphabetical
+                 // is the only option that's actually meaningful without playtime data
+  soundEnabled: true,
+  serverBase: '',
+  installRoot: '',
+};
+
+/* ---------------------------------------------------------------
+ * TAURI BRIDGE
+ * ---------------------------------------------------------------
+ * This file also opens fine as a plain static HTML preview in a
+ * regular browser (no Tauri runtime present), which is how it's been
+ * iterated on throughout. TAURI is null in that case, and every call
+ * site below checks for it first rather than assuming it exists —
+ * settings just stay in-memory defaults when there's nothing to load
+ * from or save to.
+ * --------------------------------------------------------------- */
+const TAURI = window.__TAURI__ || null;
+
+const PLATFORM_LABELS = { PS1: 'PS1 — DuckStation', PS2: 'PS2 — PCSX2', PC: 'PC — Wine', Switch: 'Switch — Eden' };
+
+/* Mirrors settings.rs's default_emulators() — used when there's no
+   Tauri runtime to load real settings from (browser preview). */
+const DEFAULT_EMULATORS = {
+  PS1: { command: 'duckstation-qt', args_prefix: [], version_flag: '-version' },
+  PS2: { command: 'pcsx2-qt', args_prefix: [], version_flag: '--version' },
+  PC: { command: 'wine', args_prefix: [], version_flag: '--version' },
+  Switch: { command: 'eden-cli', args_prefix: [], version_flag: '--version' },
+};
+
+async function loadSettings() {
+  if (!TAURI) {
+    state.emulators = DEFAULT_EMULATORS;
+    renderEmulatorRows();
+    return;
+  }
+  const s = await TAURI.core.invoke('get_settings');
+  state.soundEnabled = s.sound_enabled;
+  state.serverBase = s.server_base;
+  state.installRoot = s.install_root;
+  state.emulators = s.emulators;
+  document.getElementById('server-base-input').value = s.server_base;
+  document.getElementById('install-root-input').value = s.install_root;
+  updateSoundToggleUI();
+  renderEmulatorRows();
+}
+
+async function persistSettings() {
+  if (!TAURI) return;
+  await TAURI.core.invoke('save_settings', {
+    settings: {
+      server_base: state.serverBase,
+      install_root: state.installRoot,
+      sound_enabled: state.soundEnabled,
+      emulators: state.emulators,
+    },
+  });
+}
+
+function renderEmulatorRows() {
+  const container = document.getElementById('emulator-rows');
+  container.innerHTML = PLATFORM_ORDER.map(platform => {
+    const emu = state.emulators[platform] || { command: '', args_prefix: [], version_flag: '' };
+    return `
+      <div class="emulator-row" data-platform="${platform}">
+        <div class="emulator-row-header">
+          <span class="emulator-name">${PLATFORM_LABELS[platform] || platform}</span>
+          <span class="dependency-status" data-status>Not checked</span>
+        </div>
+        <div class="emulator-fields">
+          <input class="setting-input emu-command" data-field="command" placeholder="Command (e.g. duckstation-qt, or flatpak)" value="${emu.command}">
+          <input class="setting-input emu-args" data-field="args_prefix" placeholder="Args before the game path (e.g. run net.pcsx2.PCSX2 --)" value="${emu.args_prefix.join(' ')}">
+          <div class="emulator-fields-row">
+            <input class="setting-input emu-version-flag" data-field="version_flag" placeholder="Version flag (e.g. --version)" value="${emu.version_flag}">
+            <button class="browse-button emu-check" type="button" data-check="${platform}">Check</button>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* Values are only written to state.emulators (and persisted) on
+   change/blur, not on every keystroke — delegated to the container
+   since rows are re-rendered wholesale rather than patched. */
+document.getElementById('emulator-rows').addEventListener('change', (e) => {
+  const input = e.target.closest('.setting-input');
+  if (!input) return;
+  const row = input.closest('.emulator-row');
+  const platform = row.dataset.platform;
+  const field = input.dataset.field;
+  if (!state.emulators[platform]) state.emulators[platform] = { command: '', args_prefix: [], version_flag: '' };
+  if (field === 'args_prefix') {
+    state.emulators[platform].args_prefix = input.value.trim().split(/\s+/).filter(Boolean);
+  } else {
+    state.emulators[platform][field] = input.value.trim();
+  }
+  persistSettings();
+});
+
+async function checkEmulator(platform) {
+  if (!TAURI) return;
+  const row = document.querySelector(`.emulator-row[data-platform="${platform}"]`);
+  const statusEl = row.querySelector('[data-status]');
+  const command = row.querySelector('.emu-command').value.trim();
+  const argsPrefix = row.querySelector('.emu-args').value.trim().split(/\s+/).filter(Boolean);
+  const versionFlag = row.querySelector('.emu-version-flag').value.trim();
+
+  statusEl.textContent = 'Checking…';
+  statusEl.className = 'dependency-status checking';
+  try {
+    const result = await TAURI.core.invoke('check_dependency', { command, argsPrefix, versionFlag });
+    statusEl.textContent = result.found ? (result.version ? `Found · ${result.version}` : 'Found') : 'Not found';
+    statusEl.className = `dependency-status ${result.found ? 'found' : 'missing'}`;
+  } catch (err) {
+    statusEl.textContent = 'Check failed';
+    statusEl.className = 'dependency-status missing';
+  }
+}
+
+async function checkServerNsz() {
+  if (!TAURI) return;
+  const row = document.querySelector('.emulator-row[data-row="server-nsz"]');
+  const statusEl = row.querySelector('[data-status]');
+  statusEl.textContent = 'Checking…';
+  statusEl.className = 'dependency-status checking';
+  try {
+    const result = await TAURI.core.invoke('fetch_server_status', { serverBase: state.serverBase });
+    statusEl.textContent = result.nsz_found ? (result.nsz_version ? `Found · ${result.nsz_version}` : 'Found') : 'Not found on server';
+    statusEl.className = `dependency-status ${result.nsz_found ? 'found' : 'missing'}`;
+  } catch (err) {
+    statusEl.textContent = 'Server unreachable';
+    statusEl.className = 'dependency-status missing';
+  }
+}
+
+/* ---------------------------------------------------------------
+ * SOUND — synthesized via Web Audio, no audio files needed.
+ * Scoped deliberately to keyboard/gamepad-driven interaction only;
+ * mouse clicks stay silent, matching console-UI convention where
+ * audio feedback tracks d-pad/analog navigation, not pointer input.
+ * --------------------------------------------------------------- */
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return audioCtx;
+}
+
+function playTone(freq, duration, gainPeak = 1.0) {
+  if (!state.soundEnabled) return;
+  const ctx = getAudioCtx();
+
+  const schedule = () => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0, ctx.currentTime);
+    gain.gain.linearRampToValueAtTime(gainPeak, ctx.currentTime + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + duration);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + duration);
+  };
+
+  // currentTime is frozen while suspended, so scheduling against it
+  // before resume() actually finishes computes start/stop times that
+  // can already be in the past once the context genuinely starts
+  // running — the oscillator plays back truncated or not at all,
+  // independent of gain. Waiting for resume() to resolve first is
+  // what actually fixes that, not raising gainPeak further.
+  if (ctx.state === 'suspended') {
+    ctx.resume().then(schedule);
+  } else {
+    schedule();
+  }
+}
+
+function playMoveSound() { playTone(720, 0.05, 0.7); }
+function playSelectSound() {
+  playTone(880, 0.06, 0.9);
+  setTimeout(() => playTone(1180, 0.07, 0.8), 45);
+}
+function playBackSound() { playTone(300, 0.09, 0.9); }
+
+/* ---------------------------------------------------------------
+ * RENDER: SIDEBAR FILTERS
+ * --------------------------------------------------------------- */
+function renderPlatformNav() {
+  const counts = {};
+  GAMES.forEach(g => counts[g.platform] = (counts[g.platform] || 0) + 1);
+
+  const nav = document.getElementById('platform-nav');
+  nav.innerHTML = '<div class="nav-label">Platforms</div>' + PLATFORM_ORDER
+    .filter(p => counts[p])
+    .map(platform => `
+      <div class="nav-item" data-type="platform" data-value="${platform}" tabindex="0" role="button">
+        <span class="nav-item-inner">${platform}</span>
+        <span class="count">${counts[platform]}</span>
+      </div>
+    `).join('');
+}
+
+function renderStatusNav() {
+  const installedCount = GAMES.filter(g => g.installed).length;
+  const nav = document.getElementById('status-nav');
+  nav.innerHTML = `
+    <div class="nav-label">Status</div>
+    <div class="nav-item" data-type="status" data-value="installed" tabindex="0" role="button">
+      <span class="nav-item-inner">Installed</span>
+      <span class="count">${installedCount}</span>
+    </div>
+  `;
+}
+
+function renderSidebarFooter() {
+  const installedCount = GAMES.filter(g => g.installed).length;
+  document.getElementById('sidebar-footer').innerHTML =
+    `<strong>${installedCount} of ${GAMES.length} titles</strong> installed locally`;
+}
+
+/* ---------------------------------------------------------------
+ * RENDER: GRID
+ * --------------------------------------------------------------- */
+function getFilteredSortedGames() {
+  let list = GAMES.filter(g => {
+    const matchesPlatform = state.platforms.size === 0 || state.platforms.has(g.platform);
+    const matchesInstalled = !state.installedOnly || g.installed;
+    const matchesQuery = g.title.toLowerCase().includes(state.query.toLowerCase());
+    return matchesPlatform && matchesInstalled && matchesQuery;
+  });
+
+  if (state.sort === 'alpha') {
+    list = list.slice().sort((a, b) => a.title.localeCompare(b.title));
+  } else if (state.sort === 'playtime') {
+    list = list.slice().sort((a, b) => b.hours - a.hours);
+  } else if (state.sort === 'platform') {
+    list = list.slice().sort((a, b) =>
+      PLATFORM_ORDER.indexOf(a.platform) - PLATFORM_ORDER.indexOf(b.platform) ||
+      a.title.localeCompare(b.title)
+    );
+  } else {
+    list = list.slice().sort((a, b) => a.lastPlayedDaysAgo - b.lastPlayedDaysAgo);
+  }
+  return list;
+}
+
+function initials(title) {
+  return title
+    .split(' ')
+    .filter(w => /[a-zA-Z]/.test(w[0]))
+    .slice(0, 2)
+    .map(w => w[0].toUpperCase())
+    .join('');
+}
+
+function formatLastPlayed(days) {
+  if (days === 0) return 'Playing now';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) return `${Math.round(days / 7)}w ago`;
+  return `${Math.round(days / 30)}mo ago`;
+}
+
+function formatSize(sizeGB) {
+  if (sizeGB < 1) return `${Math.round(sizeGB * 1024)} MB`;
+  return `${sizeGB.toFixed(1)} GB`;
+}
+
+function cardSubLine(g) {
+  const segs = [];
+  if (g.genre) segs.push(g.genre);
+  else if (g.release_year) segs.push(String(g.release_year));
+  if (typeof g.hours === 'number') segs.push(`${g.hours}h played`);
+  return segs.map(s => `<span>${s}</span>`).join('<span class="dot-sep"></span>');
+}
+
+function cardHTML(g) {
+  const style = GENRE_STYLES[g.genre] || GENRE_STYLES.Indie;
+  const recent = typeof g.lastPlayedDaysAgo === 'number' && g.lastPlayedDaysAgo <= 2;
+  const coverInner = g.cover
+    ? `<img class="cover-image" src="${g.cover}" alt="${g.title}" loading="lazy">`
+    : `<div class="monogram">${initials(g.title)}</div>`;
+  return `
+    <div class="card" tabindex="0" role="button" aria-label="${g.title}" data-id="${g.id}">
+      <div class="cover" style="background:${style.grad}">
+        <span class="platform-tag">${g.platform}</span>
+        ${coverInner}
+        ${recent ? `<span class="badge recent">${formatLastPlayed(g.lastPlayedDaysAgo)}</span>` : ''}
+      </div>
+      <div class="meta">
+        <p class="title">${g.title}</p>
+        <div class="sub">${cardSubLine(g)}</div>
+      </div>
+    </div>`;
+}
+
+function renderGrid(resetScroll = false) {
+  const games = getFilteredSortedGames();
+  document.getElementById('visible-count').textContent = games.length;
+  document.getElementById('total-count').textContent = GAMES.length;
+  virtualGames = games;
+
+  const grid = document.getElementById('grid');
+  if (games.length === 0) {
+    grid.innerHTML = isLoading
+      ? `
+      <div class="empty-state">
+        <strong>Loading your library…</strong>
+        Fetching the catalog from the server.
+      </div>`
+      : `
+      <div class="empty-state">
+        <strong>Nothing here</strong>
+        No games match your search or filter — try clearing them.
+      </div>`;
+    return;
+  }
+
+  // Only reset scroll when the caller explicitly says the result set
+  // itself changed (a search/filter edit) — NOT on every call. This
+  // used to run unconditionally, which was fine for its original two
+  // call sites but broke the moment renderGrid() also became how
+  // install-status updates refresh the grid: an active download fires
+  // this repeatedly (once per progress tick), and resetting scroll
+  // every time made it impossible to scroll away from the top at all
+  // while anything was downloading.
+  if (resetScroll) document.querySelector('.main').scrollTop = 0;
+  measureVirtualLayout();
+  renderVirtualWindow(true); // the result set changed, so force a fresh render
+                             // rather than trusting the (now-stale) hysteresis check
+}
+
+/* Recomputes column count and an estimated row height whenever the
+   result set or window size changes. The row height is a calculated
+   estimate (cover's aspect-ratio against the real measured column
+   width, plus a fixed allowance for the title/meta text beneath it),
+   not a measurement of an actual rendered card — titles that wrap to
+   two lines make individual rows slightly taller than this assumes,
+   which is fine: VIRTUAL_ROW_BUFFER's extra rows above and below the
+   viewport exist specifically to absorb that kind of small drift
+   without it ever becoming visible as a gap or a pop-in. */
+function measureVirtualLayout() {
+  const grid = document.getElementById('grid');
+  const colValues = getComputedStyle(grid).gridTemplateColumns.split(' ').filter(Boolean);
+  virtualCols = colValues.length || 1;
+
+  const colWidth = parseFloat(colValues[0]) || 168;
+  const coverHeight = colWidth * 4 / 3; // matches .cover's aspect-ratio: 3 / 4
+  const metaHeight = 58;                // title + sub-line + spacing, approximate
+  const rowGap = 22;                    // matches .grid's row gap
+  virtualRowHeight = coverHeight + metaHeight + rowGap;
+}
+
+/* The actual windowing: slices virtualGames down to whatever's within
+   VIRTUAL_ROW_BUFFER rows of the visible viewport, and renders exactly
+   that slice — plus two spacer elements (each spanning the full grid
+   width) sized to stand in for the rows above and below that aren't
+   real DOM nodes right now, so the scrollbar's size and position stay
+   correct as if the whole list were actually rendered.
+   
+   renderedFirstRow/renderedLastRow track what's currently actually in
+   the DOM. If the visible area (without the buffer) is still fully
+   inside that range, this returns without touching the DOM at all —
+   this is what stops cards right at the render boundary from being
+   removed and immediately re-added as the scroll position jitters by
+   a pixel or two across a row edge, which showed up as individual
+   cards in the last row or two flickering during a real scroll,
+   independent of how generous the buffer itself is. */
+let renderedFirstRow = -1;
+let renderedLastRow = -1;
+
+function renderVirtualWindow(force = false) {
+  const grid = document.getElementById('grid');
+  const main = document.querySelector('.main');
+  if (!virtualGames.length || !virtualRowHeight) return;
+
+  const totalRows = Math.ceil(virtualGames.length / virtualCols);
+  const scrollTop = main.scrollTop;
+  const viewportHeight = main.clientHeight;
+
+  const visibleFirstRow = Math.floor(scrollTop / virtualRowHeight);
+  const visibleLastRow = Math.ceil((scrollTop + viewportHeight) / virtualRowHeight);
+
+  if (!force && renderedFirstRow !== -1 &&
+      visibleFirstRow >= renderedFirstRow && visibleLastRow <= renderedLastRow) {
+    return; // what's already rendered still fully covers what's visible
+  }
+
+  const firstRow = Math.max(0, visibleFirstRow - VIRTUAL_ROW_BUFFER);
+  const lastRow = Math.min(totalRows - 1, visibleLastRow + VIRTUAL_ROW_BUFFER);
+  renderedFirstRow = firstRow;
+  renderedLastRow = lastRow;
+
+  const startIdx = firstRow * virtualCols;
+  const endIdx = Math.min(virtualGames.length, (lastRow + 1) * virtualCols);
+
+  const topSpacerHeight = firstRow * virtualRowHeight;
+  const bottomSpacerHeight = Math.max(0, (totalRows - 1 - lastRow) * virtualRowHeight);
+
+  const slice = virtualGames.slice(startIdx, endIdx);
+
+  grid.innerHTML =
+    `<div class="grid-spacer" style="grid-column:1/-1;height:${topSpacerHeight}px;"></div>` +
+    slice.map(cardHTML).join('') +
+    `<div class="grid-spacer" style="grid-column:1/-1;height:${bottomSpacerHeight}px;"></div>`;
+}
+
+/* ---------------------------------------------------------------
+ * RENDER: GAME DETAIL VIEW
+ * --------------------------------------------------------------- */
+let detailMedia = [];
+let detailMediaIndex = 0;
+let currentDetailId = null;
+
+function detailMetaHTML(game) {
+  const segs = [];
+  if (game.genre) segs.push(`<span class="genre-pill">${game.genre}</span>`);
+  segs.push(`<span>${game.platform}</span>`);
+  if (typeof game.hours === 'number') segs.push(`<span>${game.hours}h played</span>`);
+  if (typeof game.lastPlayedDaysAgo === 'number') {
+    segs.push(`<span>Last played ${formatLastPlayed(game.lastPlayedDaysAgo)}</span>`);
+  } else if (game.release_year) {
+    segs.push(`<span>${game.release_year}</span>`);
+  }
+  return segs.join('<span class="dot-sep"></span>');
+}
+
+function openGameDetail(id) {
+  const game = GAMES.find(g => g.id === id);
+  if (!game) return;
+
+  currentDetailId = id;
+  detailMedia = buildMedia(game);
+  detailMediaIndex = 0;
+
+  document.getElementById('detail-title').textContent = game.title;
+  document.getElementById('detail-meta').innerHTML = detailMetaHTML(game);
+  document.getElementById('description').textContent = getDescription(game);
+
+  renderCtaRow(game);
+  renderThumbStrip(game);
+  renderViewerMedia(game);
+
+  document.getElementById('view-library').style.display = 'none';
+  document.getElementById('view-detail').style.display = 'block';
+  window.scrollTo({ top: 0 });
+  focusNoScroll(document.getElementById('detail-back')); // entering this view otherwise leaves
+                                                    // focus on nothing — view-library (and
+                                                    // whatever card was focused) just went
+                                                    // display:none, which silently blurs it
+}
+
+function closeGameDetail() {
+  const id = currentDetailId;
+  // A playing <video> (the real trailer, not the mock placeholder) keeps
+  // outputting audio indefinitely once this view is hidden — display:none
+  // on an ancestor doesn't pause media in any browser, so this has to be
+  // done explicitly rather than assumed to happen automatically.
+  document.querySelectorAll('#viewer-media video').forEach(v => v.pause());
+  document.getElementById('view-detail').style.display = 'none';
+  document.getElementById('view-library').style.display = 'block';
+  focusCardById(id); // otherwise this view going display:none blurs whatever was
+                      // focused inside it, same class of bug as opening the view did
+}
+
+function renderCtaRow(game) {
+  const playBtn = document.getElementById('cta-button');
+  const uninstallBtn = document.getElementById('uninstall-button');
+  const sizeEl = document.getElementById('game-size');
+  const progressEl = document.getElementById('install-progress');
+  const progressFill = document.getElementById('install-progress-fill');
+  const progressLabel = document.getElementById('install-progress-label');
+  const errorEl = document.getElementById('install-error');
+
+  errorEl.style.display = game.installError ? 'block' : 'none';
+  errorEl.textContent = game.installError ? `Install failed: ${game.installError}` : '';
+
+  if (game.installProgress) {
+    const pct = game.installProgress.pct ?? 0;
+    playBtn.disabled = true;
+    playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M11 2h2v10.17l3.59-3.58L18 10l-5 5-5-5 1.41-1.41L11 12.17V2zM5 20h14v-2H5v2z"/></svg> Downloading…`;
+    uninstallBtn.style.display = 'none';
+
+    progressEl.style.display = 'flex';
+    progressFill.style.width = `${pct}%`;
+    progressLabel.textContent = game.installProgress.file ? `${game.installProgress.file} — ${pct}%` : `${pct}%`;
+  } else if (game.installed) {
+    playBtn.disabled = false;
+    playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play`;
+    uninstallBtn.style.display = 'inline-flex';
+    uninstallBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M9 3v1H4v2h1v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6h1V4h-5V3H9zm2 5h2v9h-2V8zm-4 0h2v9H7V8zm8 0h2v9h-2V8z"/></svg> Uninstall`;
+    progressEl.style.display = 'none';
+  } else {
+    playBtn.disabled = false;
+    playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M11 2h2v10.17l3.59-3.58L18 10l-5 5-5-5 1.41-1.41L11 12.17V2zM5 20h14v-2H5v2z"/></svg> Install`;
+    uninstallBtn.style.display = 'none';
+    progressEl.style.display = 'none';
+  }
+
+  sizeEl.textContent = formatSize(getSizeGB(game));
+}
+
+function renderThumbStrip(game) {
+  const strip = document.getElementById('thumb-strip');
+  const style = GENRE_STYLES[game.genre] || GENRE_STYLES.Indie;
+
+  strip.innerHTML = detailMedia.map((item, i) => {
+    const activeClass = i === 0 ? 'active' : '';
+
+    if (item.url) {
+      const inner = item.type === 'trailer'
+        ? `<video src="${item.url}" muted></video><span class="t-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>`
+        : `<img src="${item.url}" alt="${item.label}" loading="lazy">`;
+      return `<div class="thumb ${activeClass}" data-index="${i}" tabindex="0" role="button" aria-label="Show ${item.label}">${inner}</div>`;
+    }
+
+    const filter = item.type === 'trailer' ? 'brightness(0.75)' : `hue-rotate(${item.hue}deg) saturate(1.15)`;
+    const playIcon = item.type === 'trailer'
+      ? `<span class="t-play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span>`
+      : '';
+    return `
+      <div class="thumb ${activeClass}" data-index="${i}" tabindex="0" role="button" aria-label="Show ${item.label}" style="background:${style.grad}; filter:${filter}">
+        <span class="t-monogram">${initials(game.title)}</span>
+        ${playIcon}
+      </div>`;
+  }).join('');
+}
+
+function renderViewerMedia(game) {
+  const item = detailMedia[detailMediaIndex];
+  const viewer = document.getElementById('viewer-media');
+
+  const prevZone = document.querySelector('.viewer-nav-prev');
+  const nextZone = document.querySelector('.viewer-nav-next');
+  prevZone.classList.toggle('enabled', detailMediaIndex > 0);
+  prevZone.classList.toggle('disabled', detailMediaIndex === 0);
+  nextZone.classList.toggle('enabled', detailMediaIndex < detailMedia.length - 1);
+  nextZone.classList.toggle('disabled', detailMediaIndex === detailMedia.length - 1);
+
+  if (item.url) {
+    viewer.style.background = '#050308';
+    viewer.style.filter = 'none';
+    viewer.innerHTML = item.type === 'trailer'
+      ? `<video src="${item.url}" controls style="width:100%;height:100%;object-fit:contain;"></video>
+         <span class="trailer-tag">Trailer</span>`
+      : `<img src="${item.url}" alt="${item.label}" style="width:100%;height:100%;object-fit:contain;">`;
+    return;
+  }
+
+  const style = GENRE_STYLES[game.genre] || GENRE_STYLES.Indie;
+  const filter = item.type === 'trailer' ? 'brightness(0.7)' : `hue-rotate(${item.hue}deg) saturate(1.15)`;
+  viewer.style.background = style.grad;
+  viewer.style.filter = filter;
+  viewer.innerHTML = `
+    <span class="monogram-lg">${initials(game.title)}</span>
+    ${item.type === 'trailer' ? `
+      <span class="trailer-tag">Trailer</span>
+      <div class="play-button" id="play-button"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div>
+    ` : ''}
+    <span class="frame-label">${item.label}</span>
+  `;
+}
+
+
+/* ---------------------------------------------------------------
+ * EVENTS
+ * --------------------------------------------------------------- */
+document.addEventListener('click', (e) => {
+  const navItem = e.target.closest('.nav-item');
+  if (navItem) {
+    const { type, value } = navItem.dataset;
+    if (type === 'settings') {
+      openSettings();
+      return;
+    }
+    navItem.classList.toggle('active');
+    if (type === 'platform') {
+      if (state.platforms.has(value)) state.platforms.delete(value);
+      else state.platforms.add(value);
+    } else if (type === 'status' && value === 'installed') {
+      state.installedOnly = navItem.classList.contains('active');
+    }
+    renderGrid(true);
+    return;
+  }
+
+  const card = e.target.closest('.card');
+  if (card) {
+    openGameDetail(card.dataset.id);
+    return;
+  }
+
+  const thumb = e.target.closest('.thumb');
+  if (thumb) {
+    detailMediaIndex = Number(thumb.dataset.index);
+    document.querySelectorAll('.thumb').forEach(el => el.classList.remove('active'));
+    thumb.classList.add('active');
+    const game = GAMES.find(g => g.id === currentDetailId);
+    if (game) renderViewerMedia(game);
+    return;
+  }
+
+  const navZone = e.target.closest('.viewer-nav-zone');
+  if (navZone && !navZone.classList.contains('disabled')) {
+    // Reuses the thumb-strip's own click handling above by finding and
+    // clicking the adjacent thumbnail directly, rather than duplicating
+    // the index/active-class/re-render logic a second time here.
+    const targetIndex = detailMediaIndex + (navZone.dataset.nav === 'prev' ? -1 : 1);
+    const targetThumb = document.querySelector(`.thumb[data-index="${targetIndex}"]`);
+    if (targetThumb) targetThumb.click();
+    return;
+  }
+
+  if (e.target.closest('#detail-back')) {
+    closeGameDetail();
+    return;
+  }
+
+  const cta = e.target.closest('#cta-button');
+  if (cta && !cta.disabled) {
+    const game = GAMES.find(g => g.id === currentDetailId);
+    if (!game) return;
+    if (game.installed) {
+      launchGame(game);
+    } else {
+      installGame(game);
+    }
+    return;
+  }
+
+  const uninstall = e.target.closest('#uninstall-button');
+  if (uninstall) {
+    const game = GAMES.find(g => g.id === currentDetailId);
+    if (game) uninstallGame(game);
+    return;
+  }
+
+  const cancelBtn = e.target.closest('#cancel-install-button');
+  if (cancelBtn) {
+    const game = GAMES.find(g => g.id === currentDetailId);
+    if (game) cancelInstall(game);
+    return;
+  }
+
+  if (e.target.closest('#settings-close') || e.target === document.getElementById('settings-backdrop')) {
+    closeSettings();
+    return;
+  }
+
+  const soundToggle = e.target.closest('#sound-toggle');
+  if (soundToggle) {
+    state.soundEnabled = !state.soundEnabled;
+    updateSoundToggleUI();
+    if (state.soundEnabled) playSelectSound(); // confirms it's actually working
+    persistSettings();
+    return;
+  }
+
+  const browseBtn = e.target.closest('#browse-install-root');
+  if (browseBtn) {
+    browseForInstallRoot();
+    return;
+  }
+
+  const checkBtn = e.target.closest('.emu-check');
+  if (checkBtn) {
+    const target = checkBtn.dataset.check;
+    if (target === 'server-nsz') checkServerNsz();
+    else checkEmulator(target);
+    return;
+  }
+});
+
+document.getElementById('server-base-input').addEventListener('change', (e) => {
+  state.serverBase = e.target.value.trim();
+  persistSettings();
+});
+
+document.getElementById('install-root-input').addEventListener('change', (e) => {
+  state.installRoot = e.target.value.trim();
+  persistSettings();
+});
+
+async function browseForInstallRoot() {
+  if (!TAURI) return; // no native folder picker in a plain-browser preview
+  // window.__TAURI__.dialog does not exist in a no-bundler setup — the
+  // official plugin JS package is a real ES module meant for import
+  // resolution, not a global-attaching script, so withGlobalTauri alone
+  // doesn't expose it. This calls the plugin's underlying command the
+  // same way that package's own open() does internally.
+  const selected = await TAURI.core.invoke('plugin:dialog|open', {
+    options: { directory: true, multiple: false },
+  });
+  if (!selected) return; // user cancelled
+  state.installRoot = selected;
+  document.getElementById('install-root-input').value = selected;
+  persistSettings();
+}
+
+document.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+
+  // Enter/Space activates the focused control — both our custom divs
+  // (role="button") and real <button> elements are handled manually
+  // here rather than left to native activation, so keyboard and
+  // gamepad get identical sound feedback through one code path.
+  if (e.key === 'Enter' || e.key === ' ') {
+    const isActivatable = active && (active.tagName === 'BUTTON' || (active.getAttribute && active.getAttribute('role') === 'button'));
+    if (isActivatable) {
+      e.preventDefault();
+      playSelectSound();
+      active.click();
+    }
+    return;
+  }
+
+  // Escape / Backspace backs out of settings, then the detail view —
+  // but never while typing.
+  if (e.key === 'Escape' || e.key === 'Backspace') {
+    if (isTypingTarget(active)) return;
+    if (isSettingsOpen() || isDetailOpen()) {
+      e.preventDefault();
+      goBack();
+    }
+    return;
+  }
+
+  const dirMap = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+  const dir = dirMap[e.key];
+  if (!dir) return;
+
+  // Leave native arrow behavior alone for the sort <select> entirely,
+  // and for horizontal movement inside any text input (so text editing
+  // isn't hijacked) — only Up/Down repurpose into moving between
+  // fields. moveDirection() below is the single source of truth for
+  // where each field actually leads, shared with the gamepad poll
+  // loop, which drives all four directions unconditionally since a
+  // D-pad has no "text cursor" concept to preserve in the first place.
+  if (active && active.tagName === 'SELECT') return;
+  if (active && active.tagName === 'INPUT' && (dir === 'left' || dir === 'right')) return;
+
+  e.preventDefault();
+  moveWithSound(dir);
+});
+
+function moveWithSound(dir) {
+  const before = document.activeElement;
+  moveDirection(dir);
+  if (document.activeElement !== before) playMoveSound();
+}
+
+function isTypingTarget(el) {
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+}
+
+function isDetailOpen() {
+  return document.getElementById('view-detail').style.display === 'block';
+}
+
+function isSettingsOpen() {
+  return document.getElementById('settings-backdrop').style.display !== 'none';
+}
+
+function openSettings() {
+  document.getElementById('settings-backdrop').style.display = 'flex';
+  focusNoScroll(document.getElementById('settings-close'));
+}
+
+function closeSettings() {
+  document.getElementById('settings-backdrop').style.display = 'none';
+  focusNoScroll(document.querySelector('.nav-item[data-type="settings"]'));
+}
+
+function updateSoundToggleUI() {
+  const toggle = document.getElementById('sound-toggle');
+  toggle.classList.toggle('on', state.soundEnabled);
+  toggle.setAttribute('aria-checked', String(state.soundEnabled));
+}
+
+/* Every focus() call in this app goes through this rather than the
+   native method directly. Without {preventScroll: true}, focus()
+   triggers the browser's own internal "ensure this element is
+   visible" logic on every call — even when the element is already
+   fully visible, that still touches the browser's scroll machinery
+   internally. On this system, something in that internal mechanism
+   (most likely GTK's accessibility layer reacting to a focus change,
+   independent of whether any actual scroll position changed) was
+   causing the scrollbar to flash on literally every focus move
+   anywhere in the app, not just grid-related ones — ruled out
+   GTK_OVERLAY_SCROLLING and every grid-specific over-rendering theory
+   first, since this needed to explain "any element," not just cards. */
+function focusNoScroll(el) {
+  if (el) el.focus({ preventScroll: true });
+}
+
+/* The single place that moves keyboard/gamepad focus onto a specific
+   game by its position in the full (unfiltered-by-virtualization)
+   list — scrolls its row into view if necessary, renders that part of
+   the window, then focuses the resulting element. Scroll position and
+   DOM update happen together here rather than relying on the scroll
+   event's own re-render to eventually catch up, which would leave a
+   window where the target card doesn't exist yet to focus. */
+function focusGameByIndex(idx) {
+  if (idx < 0 || idx >= virtualGames.length) return;
+  const game = virtualGames[idx];
+  const main = document.querySelector('.main');
+
+  const row = Math.floor(idx / virtualCols);
+  const rowTop = row * virtualRowHeight;
+  const rowBottom = rowTop + virtualRowHeight;
+
+  let scrolled = false;
+  if (rowTop < main.scrollTop) {
+    main.scrollTop = Math.max(0, rowTop - virtualRowHeight);
+    scrolled = true;
+  } else if (rowBottom > main.scrollTop + main.clientHeight) {
+    main.scrollTop = rowBottom - main.clientHeight + virtualRowHeight;
+    scrolled = true;
+  }
+
+  // Only force a rebuild if the scroll position actually had to move —
+  // if the target row was already inside the visible area, its card
+  // already exists in the DOM from whatever render put it there.
+  // Forcing a full grid.innerHTML rebuild on every single navigation
+  // step regardless of necessity was reflowing the scrollable content
+  // on every focus change, which is what was making the scrollbar
+  // flash every time focus moved, even between two already-visible
+  // cards that never needed a re-render at all.
+  if (scrolled) {
+    renderVirtualWindow(true);
+  }
+
+  const el = document.querySelector(`.card[data-id="${game.id}"]`);
+  if (el) focusNoScroll(el);
+}
+
+function focusCardById(id) {
+  const idx = virtualGames.findIndex(g => g.id === id);
+  if (idx === -1) return;
+  focusGameByIndex(idx);
+}
+
+function focusFirstCard() {
+  focusGameByIndex(0);
+}
+
+function focusActiveThumb() {
+  const active = document.querySelector('.thumb.active') || document.querySelector('.thumb');
+  if (active) focusNoScroll(active);
+}
+
+function goBack() {
+  if (isSettingsOpen()) {
+    playBackSound();
+    closeSettings();
+    return;
+  }
+  if (isDetailOpen()) {
+    playBackSound();
+    closeGameDetail();
+  }
+}
+
+function activateFocused() {
+  if (!document.activeElement) return;
+  playSelectSound();
+  document.activeElement.click();
+}
+
+/* Single source of truth for spatial movement, shared by the keyboard
+   handler above and the gamepad D-pad/stick polling below — so a
+   controller and a keyboard drive the exact same navigation model. */
+function moveDirection(dir) {
+  const active = document.activeElement;
+  if (!active) { focusFirstCard(); return; }
+
+  if (active.id === 'search') {
+    if (dir === 'down') focusNoScroll(document.querySelector('.nav-item'));
+    // 'up' intentionally does nothing now — search is the topmost
+    // element in the sidebar, not sandwiched between the grid and the
+    // nav-items the way it was before the move.
+    return;
+  }
+
+  // Every field and button inside the settings modal shares one rule:
+  // Up/Left go to the previous focusable element in DOM order, Down/
+  // Right go to the next. The modal is just a linear vertical form —
+  // there's no benefit to hand-chaining dozens of specific ID pairs
+  // (four emulator rows, each with three fields and a Check button,
+  // plus the server-nsz row) when "previous/next in document order"
+  // already gets every one of them right, including ones added later
+  // without needing new chaining code for each. This is also what
+  // guarantees a gamepad can always navigate a text input away from
+  // itself — previously, focusing one of these fields left a D-pad
+  // with no defined direction to leave through at all.
+  const settingsModal = document.querySelector('#settings-backdrop .modal');
+  if (settingsModal && settingsModal.contains(active)) {
+    const focusables = Array.from(settingsModal.querySelectorAll('button, input'));
+    const idx = focusables.indexOf(active);
+    if ((dir === 'down' || dir === 'right') && idx < focusables.length - 1) focusNoScroll(focusables[idx + 1]);
+    else if ((dir === 'up' || dir === 'left') && idx > 0) focusNoScroll(focusables[idx - 1]);
+    return;
+  }
+
+  if (active.classList.contains('nav-item')) {
+    const items = Array.from(document.querySelectorAll('.nav-item'));
+    const idx = items.indexOf(active);
+    if (dir === 'down') focusNoScroll(items[Math.min(idx + 1, items.length - 1)]);
+    else if (dir === 'up') {
+      if (idx === 0) focusNoScroll(document.getElementById('search'));
+      else focusNoScroll(items[idx - 1]);
+    } else if (dir === 'right') focusFirstCard();
+    return;
+  }
+
+  if (active.classList.contains('card')) {
+    // Index-based against the full filtered list, not DOM-based against
+    // whatever's currently rendered — with virtualization, most of the
+    // list at any moment isn't in the DOM at all, so "next sibling
+    // .card element" no longer means "next game in the list" the way
+    // it used to before rows outside the viewport stopped existing.
+    const idx = virtualGames.findIndex(g => g.id === active.dataset.id);
+    if (idx === -1) return;
+    const cols = virtualCols;
+    if (dir === 'right' && idx < virtualGames.length - 1) focusGameByIndex(idx + 1);
+    else if (dir === 'left') {
+      if (idx % cols === 0) focusNoScroll(document.querySelector('.nav-item'));
+      else focusGameByIndex(idx - 1);
+    } else if (dir === 'down' && idx + cols < virtualGames.length) {
+      focusGameByIndex(idx + cols);
+    } else if (dir === 'up') {
+      if (idx - cols < 0) focusNoScroll(document.getElementById('search'));
+      else focusGameByIndex(idx - cols);
+    }
+    return;
+  }
+
+  if (active.classList.contains('thumb')) {
+    const thumbs = Array.from(document.querySelectorAll('.thumb'));
+    const idx = thumbs.indexOf(active);
+    if (dir === 'right') focusNoScroll(thumbs[Math.min(idx + 1, thumbs.length - 1)]);
+    else if (dir === 'left') focusNoScroll(thumbs[Math.max(idx - 1, 0)]);
+    else if (dir === 'up') focusNoScroll(document.getElementById('viewer'));
+    return;
+  }
+
+  if (active.id === 'viewer') {
+    if (dir === 'up') focusNoScroll(document.getElementById('cta-button'));
+    else if (dir === 'down') focusActiveThumb();
+    else if (dir === 'left' || dir === 'right') {
+      // Reuses the hover-zone's own click handling (which itself just
+      // clicks the adjacent thumbnail) rather than re-implementing
+      // prev/next media navigation a third time in this file.
+      const zone = document.querySelector(dir === 'left' ? '.viewer-nav-prev' : '.viewer-nav-next');
+      if (zone && !zone.classList.contains('disabled')) zone.click();
+    }
+    return;
+  }
+
+  if (active.id === 'cta-button') {
+    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
+    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
+    else if (dir === 'right') {
+      const u = document.getElementById('uninstall-button');
+      if (u && u.style.display !== 'none') focusNoScroll(u);
+    }
+    return;
+  }
+
+  if (active.id === 'uninstall-button') {
+    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
+    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
+    else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
+    return;
+  }
+
+  if (active.id === 'detail-back') {
+    if (dir === 'down') {
+      // cta-button is disabled (and so unfocusable) while a download is
+      // active, so its usual place in the chain has to be swapped for
+      // the Cancel button in that state, or there'd be no way to reach
+      // it via keyboard/gamepad at all.
+      const downloading = document.getElementById('install-progress').style.display !== 'none';
+      focusNoScroll(document.getElementById(downloading ? 'cancel-install-button' : 'cta-button'));
+    }
+    return;
+  }
+
+  if (active.id === 'cancel-install-button') {
+    if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
+    else if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
+    return;
+  }
+
+}
+
+/* ---------------------------------------------------------------
+ * GAMEPAD SUPPORT
+ * ---------------------------------------------------------------
+ * Polls the first connected pad every frame and maps it onto the
+ * same moveDirection/activateFocused/goBack functions the keyboard
+ * uses, so a controller drives identical, focus-based navigation
+ * rather than a separate input path.
+ *   D-pad or left stick -> move focus (repeats while held)
+ *   Face button 0 (A / Cross)  -> activate the focused element
+ *   Face button 1 (B / Circle) -> back out of the detail view
+ * --------------------------------------------------------------- */
+let gamepadIndex = null;
+let prevFaceButtons = [false, false];
+let prevButtonPressed = [];
+let lastMoveAt = 0;
+const MOVE_REPEAT_MS = 220;
+const STICK_DEADZONE = 0.5;
+
+window.addEventListener('gamepadconnected', (e) => {
+  gamepadIndex = e.gamepad.index;
+  console.log(`gamepad connected: "${e.gamepad.id}", mapping: "${e.gamepad.mapping}", ${e.gamepad.buttons.length} buttons, ${e.gamepad.axes.length} axes`);
+  if (e.gamepad.mapping !== 'standard') {
+    console.warn('This pad is not reporting the W3C "standard" gamepad mapping — D-pad is assumed at buttons[12..15], which only holds for standard-mapped pads. Press each D-pad direction once and watch for "gamepad button N pressed" logs below to find the real indices on this pad.');
+  }
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  if (gamepadIndex === e.gamepad.index) gamepadIndex = null;
+});
+
+function pollGamepad(timestamp) {
+  requestAnimationFrame(pollGamepad);
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = (gamepadIndex !== null ? pads[gamepadIndex] : pads[0]) || null;
+  if (!gp) return;
+
+  // Diagnostic only — logs the raw index the instant any button is
+  // newly pressed, so the D-pad's real indices are discoverable on a
+  // pad that isn't standard-mapped, instead of guessed at blindly.
+  gp.buttons.forEach((b, i) => {
+    if (b.pressed && !prevButtonPressed[i]) {
+      console.log(`gamepad button ${i} pressed (value: ${b.value.toFixed(2)})`);
+    }
+  });
+  prevButtonPressed = gp.buttons.map(b => b.pressed);
+
+  const up = (gp.buttons[12] && gp.buttons[12].pressed) || gp.axes[1] < -STICK_DEADZONE;
+  const down = (gp.buttons[13] && gp.buttons[13].pressed) || gp.axes[1] > STICK_DEADZONE;
+  const left = (gp.buttons[14] && gp.buttons[14].pressed) || gp.axes[0] < -STICK_DEADZONE;
+  const right = (gp.buttons[15] && gp.buttons[15].pressed) || gp.axes[0] > STICK_DEADZONE;
+
+  if (up || down || left || right) {
+    if (timestamp - lastMoveAt > MOVE_REPEAT_MS) {
+      lastMoveAt = timestamp;
+      if (up) moveWithSound('up');
+      else if (down) moveWithSound('down');
+      else if (left) moveWithSound('left');
+      else moveWithSound('right');
+    }
+  } else {
+    lastMoveAt = 0; // next press moves immediately rather than waiting out the repeat delay
+  }
+
+  const aPressed = !!(gp.buttons[0] && gp.buttons[0].pressed);
+  const bPressed = !!(gp.buttons[1] && gp.buttons[1].pressed);
+  if (aPressed && !prevFaceButtons[0]) activateFocused();
+  if (bPressed && !prevFaceButtons[1]) goBack();
+  prevFaceButtons = [aPressed, bPressed];
+}
+requestAnimationFrame(pollGamepad);
+
+document.getElementById('search').addEventListener('input', (e) => {
+  state.query = e.target.value;
+  renderGrid(true);
+});
+
+/* Organic scrolling (mouse wheel, dragging the scrollbar) re-renders
+   the virtual window too — not just the explicit focus-driven scrolls
+   in focusGameByIndex. Throttled to one render per animation frame
+   rather than once per scroll event, since scroll fires far more often
+   than the visible window actually changes meaningfully. */
+let virtualScrollPending = false;
+document.querySelector('.main').addEventListener('scroll', () => {
+  if (!virtualGames.length || virtualScrollPending) return;
+  virtualScrollPending = true;
+  requestAnimationFrame(() => {
+    renderVirtualWindow();
+    virtualScrollPending = false;
+  });
+});
+
+/* Column count and row height both depend on window width (the grid's
+   auto-fill columns and the covers' aspect-ratio-driven height), so a
+   resize invalidates both — not just a matter of more/less space for
+   the same layout. Throttled the same way the scroll listener above
+   is, and for the same reason: 'resize' can fire many times a second
+   during an interactive drag or a maximize, and each firing here was
+   triggering a full getComputedStyle() call plus a complete grid
+   rebuild — unthrottled, that's dozens of redundant expensive rebuilds
+   stacking up over the course of one resize gesture, not one. */
+let virtualResizePending = false;
+window.addEventListener('resize', () => {
+  if (!virtualGames.length || virtualResizePending) return;
+  virtualResizePending = true;
+  requestAnimationFrame(() => {
+    measureVirtualLayout();
+    renderVirtualWindow(true); // cols/rowHeight just changed, so the
+                               // previous renderedFirstRow/LastRow are
+                               // stale and can't be trusted for the
+                               // hysteresis check
+    virtualResizePending = false;
+  });
+});
+
+/* ---------------------------------------------------------------
+ * INIT
+ * --------------------------------------------------------------- */
+async function init() {
+  renderGrid(); // shows the "Loading your library…" state immediately
+  setupInstallStatusListener();
+
+  await loadSettings();   // must resolve first — loadGames() needs state.serverBase
+  updateSoundToggleUI();
+
+  await loadGames();
+  isLoading = false;
+
+  renderPlatformNav();
+  renderStatusNav();
+  renderSidebarFooter();
+  renderGrid();
+  focusNoScroll(document.querySelector('.nav-item'));
+}
+init();
+</script>
+
+</body>
+</html>

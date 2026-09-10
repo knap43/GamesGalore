@@ -1,0 +1,16 @@
+[Unit]
+Description=Vault game library server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/vault-server
+ExecStart=/opt/vault-server/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+User=vault
+StateDirectory=vault-server
+
+[Install]
+WantedBy=multi-user.target
