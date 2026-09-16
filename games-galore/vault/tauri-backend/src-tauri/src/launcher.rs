@@ -5,7 +5,7 @@
 // lives here" assumption that holds across native installs and
 // Flatpak installs alike.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use tauri::AppHandle;
 
@@ -78,63 +78,70 @@ fn normalized(text: &str) -> String {
         .collect()
 }
 
-/// Picks the .exe to hand Wine. Mirrors _pick_pc_executable in the
-/// server's library.py: prefer something that isn't an installer or
-/// bundled runtime, then a name matching the game's own title, then the
-/// shallowest, then the largest, breaking ties on name so the choice is
-/// stable across launches.
-///
-/// The server already recorded its own pick in the catalog, but that
-/// says nothing about what actually made it onto this disk, so the
-/// decision is made again here against the real install directory.
-fn pick_pc_executable(install_dir: &Path, files: &[PathBuf]) -> Option<PathBuf> {
-    let exes: Vec<&PathBuf> = files
-        .iter()
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("exe")))
-        .collect();
-    if exes.is_empty() {
-        return None;
-    }
+fn has_extension(path: &Path, ext: &str) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
 
-    let is_non_game = |p: &PathBuf| {
+/// Every .exe in the tree, best first. Mirrors _pick_pc_executable in
+/// the server's library.py: something that isn't an installer or
+/// bundled runtime beats one that is, then a name matching the game's
+/// own title, then the shallowest, then the largest, breaking ties on
+/// name so the order is stable across launches.
+///
+/// Sorting rather than picking a single winner is what lets the UI
+/// offer the whole list when a title ships more than one — the head of
+/// this list is the automatic choice, and the rest are what someone
+/// picks from when the automatic choice is the wrong one. An installer
+/// ranks last but is still included: it beats refusing to launch, and
+/// for some titles it genuinely is the only executable present.
+///
+/// The server recorded its own pick when cataloguing, but that says
+/// nothing about what actually made it onto this disk, so the ranking
+/// is applied again here against the real install directory.
+fn ranked_executables(install_dir: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
+    let title = normalized(
+        &install_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    );
+
+    let mut exes: Vec<PathBuf> = files
+        .iter()
+        .filter(|p| has_extension(p, "exe"))
+        .cloned()
+        .collect();
+
+    exes.sort_by_key(|p| {
         let name = p
             .file_name()
             .map(|n| n.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        NON_GAME_EXE_MARKERS.iter().any(|m| name.contains(m))
-    };
+        let is_non_game = NON_GAME_EXE_MARKERS.iter().any(|m| name.contains(m)) as u8;
 
-    // Everything looking like an installer still beats refusing to
-    // launch at all — fall back to the full list rather than giving up.
-    let preferred: Vec<&PathBuf> = exes.iter().copied().filter(|p| !is_non_game(p)).collect();
-    let candidates = if preferred.is_empty() { exes } else { preferred };
+        let stem = normalized(&p.file_stem().unwrap_or_default().to_string_lossy());
+        let title_match = if stem == title {
+            0
+        } else if !stem.is_empty() && (title.contains(&stem) || stem.contains(&title)) {
+            1
+        } else {
+            2
+        };
 
-    let title = normalized(&install_dir.file_name()?.to_string_lossy());
+        let depth = p.strip_prefix(install_dir).map(|r| r.components().count()).unwrap_or(0);
+        let size = p.metadata().map(|m| m.len()).unwrap_or(0);
+        (is_non_game, title_match, depth, std::cmp::Reverse(size), name)
+    });
 
-    candidates
-        .into_iter()
-        .min_by_key(|p| {
-            let stem = normalized(&p.file_stem().unwrap_or_default().to_string_lossy());
-            let title_match = if stem == title {
-                0
-            } else if !stem.is_empty() && (title.contains(&stem) || stem.contains(&title)) {
-                1
-            } else {
-                2
-            };
-            let depth = p.strip_prefix(install_dir).map(|r| r.components().count()).unwrap_or(0);
-            let size = p.metadata().map(|m| m.len()).unwrap_or(0);
-            let name = p.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-            (title_match, depth, std::cmp::Reverse(size), name)
-        })
-        .cloned()
+    exes
 }
 
-/// Picks which file in the install directory to hand the emulator.
-/// PC titles resolve to their executable, searched for across the whole
-/// installed tree. PS1/PS2 titles that came as a .bin/.cue pair resolve
-/// to the .cue, mirroring the rule the source library scanner uses.
-fn find_local_game_file(install_dir: &Path, platform: &str) -> Option<PathBuf> {
+/// Everything in the install directory worth offering as a thing to
+/// launch, best first. PC titles list their executables; PS1/PS2 list
+/// their .cue sheets, of which a multi-disc title has one per disc.
+/// Switch titles list nothing — a base game and its updates aren't
+/// alternatives to each other, so there's no choice to present.
+fn launch_candidates(install_dir: &Path, platform: &str) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     collect_files(install_dir, &mut entries);
     entries.sort(); // fs::read_dir order is arbitrary and OS-dependent —
@@ -143,24 +150,91 @@ fn find_local_game_file(install_dir: &Path, platform: &str) -> Option<PathBuf> {
                      // even stable across runs, let alone predictable.
 
     match platform {
-        "PC" => {
-            if let Some(exe) = pick_pc_executable(install_dir, &entries) {
-                return Some(exe);
-            }
-        }
-        "PS1" | "PS2" => {
-            if let Some(cue) = entries.iter().find(|p| p.extension().is_some_and(|e| e == "cue")) {
-                return Some(cue.clone());
-            }
-        }
-        _ => {}
+        "PC" => ranked_executables(install_dir, &entries),
+        "PS1" | "PS2" => entries.into_iter().filter(|p| has_extension(p, "cue")).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Paths relative to the install directory, POSIX-style — stable
+/// identifiers the frontend can show in a list and hand straight back
+/// to launch_game.
+fn relative_names(install_dir: &Path, paths: Vec<PathBuf>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter_map(|p| {
+            p.strip_prefix(install_dir)
+                .ok()
+                .map(|r| r.to_string_lossy().replace('\\', "/"))
+        })
+        .collect()
+}
+
+/// Backs the UI's launch picker: the choices for this installed title,
+/// best first. One or zero entries means there's nothing to choose
+/// between and the picker stays hidden.
+#[tauri::command]
+pub fn list_launch_candidates(install_dir: String, platform: String) -> Vec<String> {
+    let dir = Path::new(&install_dir);
+    relative_names(dir, launch_candidates(dir, &platform))
+}
+
+/// Resolves a caller-supplied relative path against the install
+/// directory, refusing anything that escapes it. This one is worth
+/// being strict about: unlike a download, the value here ends up as
+/// the program that gets spawned, so an unchecked `../` would turn a
+/// dropdown selection into "run an arbitrary binary on this machine".
+fn resolve_chosen(install_dir: &Path, relative: &str) -> Result<PathBuf, String> {
+    let rel = Path::new(relative);
+    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err(format!("invalid executable path: {relative}"));
     }
 
+    let base = install_dir
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", install_dir.display()))?;
+    let resolved = install_dir
+        .join(rel)
+        .canonicalize()
+        .map_err(|e| format!("{relative}: {e}"))?;
+
+    // Checked after canonicalising as well, so a symlink pointing out
+    // of the install directory can't stand in for a `../`.
+    if !resolved.starts_with(&base) {
+        return Err(format!("{relative} is outside the install directory"));
+    }
+    if !resolved.is_file() {
+        return Err(format!("{relative} is not a file"));
+    }
+    Ok(resolved)
+}
+
+/// Picks which file in the install directory to hand the emulator when
+/// the caller hasn't chosen one. The head of the candidate list, or —
+/// for a platform with no candidates, or a title whose layout produced
+/// none — whatever file is there.
+fn find_local_game_file(install_dir: &Path, platform: &str) -> Option<PathBuf> {
+    if let Some(best) = launch_candidates(install_dir, platform).into_iter().next() {
+        return Some(best);
+    }
+
+    let mut entries: Vec<PathBuf> = Vec::new();
+    collect_files(install_dir, &mut entries);
+    entries.sort();
     entries.into_iter().next()
 }
 
+/// `executable` is a path relative to the install directory, as listed
+/// by list_launch_candidates — the UI's picker passes back whichever
+/// entry is selected. Left unset, the automatic choice is used, which
+/// is what happens for every title that only has one candidate.
 #[tauri::command]
-pub fn launch_game(app: AppHandle, install_dir: String, platform: String) -> Result<(), String> {
+pub fn launch_game(
+    app: AppHandle,
+    install_dir: String,
+    platform: String,
+    executable: Option<String>,
+) -> Result<(), String> {
     let settings = get_settings(app);
     let emu = settings
         .emulators
@@ -168,8 +242,11 @@ pub fn launch_game(app: AppHandle, install_dir: String, platform: String) -> Res
         .ok_or_else(|| format!("no emulator configured for platform \"{platform}\""))?;
 
     let dir = Path::new(&install_dir);
-    let file = find_local_game_file(dir, &platform)
-        .ok_or_else(|| format!("no game file found in {}", dir.display()))?;
+    let file = match executable.as_deref().filter(|s| !s.is_empty()) {
+        Some(chosen) => resolve_chosen(dir, chosen)?,
+        None => find_local_game_file(dir, &platform)
+            .ok_or_else(|| format!("no game file found in {}", dir.display()))?,
+    };
     let file_str = file.to_string_lossy().to_string();
 
     // Prefix args (e.g. Flatpak's `run <app-id> --`) come first, then
@@ -197,11 +274,26 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Builds a throwaway game tree and returns its directory.
-    /// `files` are (relative path, byte length) pairs.
+    /// Builds a throwaway game tree and returns its directory. `files`
+    /// are (relative path, byte length) pairs.
+    ///
+    /// The directory carries a unique counter as well as the game name:
+    /// tests run in parallel by default and several of them use the
+    /// same game, so keying only on the name lets one test's cleanup
+    /// delete a directory another is still reading. The name stays in
+    /// the path because the ranking compares executables against the
+    /// game's folder title, so it has to be the real one.
     fn fixture(name: &str, files: &[(&str, usize)]) -> PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
         let root = std::env::temp_dir()
-            .join(format!("gg-launcher-test-{}-{}", std::process::id(), name));
+            .join(format!(
+                "gg-launcher-test-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ))
+            .join(name);
         let _ = fs::remove_dir_all(&root);
         for (rel, size) in files {
             let path = root.join(rel);
@@ -285,6 +377,87 @@ mod tests {
     fn missing_install_dir_yields_none() {
         let dir = std::env::temp_dir().join("gg-launcher-test-does-not-exist");
         assert!(find_local_game_file(&dir, "PC").is_none());
+    }
+
+    #[test]
+    fn candidates_are_listed_best_first_with_installers_last() {
+        let dir = fixture(
+            "Hollow Meridian",
+            &[
+                ("unins000.exe", 900_000),
+                ("bin/HollowMeridian.exe", 40_000),
+                ("bin/steam_api64.dll", 2_000),
+                ("data/pak01.vpk", 9_000_000),
+                ("redist/vcredist_x64.exe", 8_000_000),
+            ],
+        );
+        let names = relative_names(&dir, launch_candidates(&dir, "PC"));
+        assert_eq!(
+            names,
+            vec!["bin/HollowMeridian.exe", "unins000.exe", "redist/vcredist_x64.exe"]
+        );
+        // The head of the list is exactly what the automatic pick uses.
+        assert_eq!(find_local_game_file(&dir, "PC").unwrap(), dir.join(&names[0]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_single_executable_gives_nothing_to_choose_between() {
+        let dir = fixture("Ferrofluid", &[("Ferrofluid.exe", 10), ("assets.dat", 20)]);
+        assert_eq!(launch_candidates(&dir, "PC").len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn multi_disc_ps1_titles_list_every_cue() {
+        let dir = fixture(
+            "Static Choir",
+            &[
+                ("Static Choir (Disc 1).cue", 300),
+                ("Static Choir (Disc 1).bin", 600_000),
+                ("Static Choir (Disc 2).cue", 300),
+                ("Static Choir (Disc 2).bin", 600_000),
+            ],
+        );
+        assert_eq!(
+            relative_names(&dir, launch_candidates(&dir, "PS1")),
+            vec!["Static Choir (Disc 1).cue", "Static Choir (Disc 2).cue"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn switch_titles_offer_no_choice() {
+        let dir = fixture("198X", &[("base.nsp", 10), ("update.nsz", 20)]);
+        assert!(launch_candidates(&dir, "Switch").is_empty());
+        // Still launchable, just not choosable.
+        assert!(find_local_game_file(&dir, "Switch").is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_chosen_executable_resolves_inside_the_install_directory() {
+        let dir = fixture("Hollow Meridian", &[("bin/HollowMeridian.exe", 10)]);
+        assert_eq!(
+            resolve_chosen(&dir, "bin/HollowMeridian.exe").unwrap(),
+            dir.join("bin/HollowMeridian.exe").canonicalize().unwrap()
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_chosen_path_escaping_the_install_directory_is_refused() {
+        let dir = fixture("Hollow Meridian", &[("game.exe", 10)]);
+        for bad in ["../../../bin/sh", "/bin/sh", "bin/../../../../bin/sh"] {
+            assert!(
+                resolve_chosen(&dir, bad).is_err(),
+                "should have refused {bad}"
+            );
+        }
+        // A file that simply isn't there is refused too, rather than
+        // being handed to the emulator to fail on later.
+        assert!(resolve_chosen(&dir, "nope.exe").is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

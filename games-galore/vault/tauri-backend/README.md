@@ -11,9 +11,9 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | --- | --- |
 | `server.rs` | Fetches the catalog (`GET /library`) and the server's `nsz` status (`GET /status`). `Game` and `GameFile` mirror the server's JSON shape exactly. |
 | `install_state.rs` | The local record of what's on this machine (`installs.json` in the app data dir, keyed by `Game.id`), plus `install_game`, `uninstall_game` and `cancel_install`. |
-| `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively; see below. |
+| `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
-| `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, and per-platform emulator config. |
+| `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, and any per-game launch overrides. |
 
 `Game.files` is a list because Switch titles can have several — base game,
 update, DLC — each independently already-`.nsp` or needing conversion. The
@@ -67,6 +67,27 @@ what actually landed on this disk.
 The two rankings are duplicated deliberately — one is in Python on the server,
 the other in Rust on the client — so if you change the exclusion list, change
 both. `NON_GAME_EXE_MARKERS` exists under that name in each.
+
+**When the automatic choice is wrong, the detail view offers a picker.** Some
+titles have more than one thing worth launching: a separate 32- and 64-bit
+executable, a launcher beside the game proper, or — for PS1/PS2 — a multi-disc
+title with a `.cue` per disc. `list_launch_candidates` returns that list for an
+installed title, ranked, and the Play row grows a dropdown whenever there are
+two or more. One candidate is not a choice, so the picker stays hidden, which
+is the common case.
+
+A selection is stored in `settings.json` under `launch_overrides`, keyed by
+`Game.id` and valued with a path relative to that game's install directory —
+and only when it differs from what the ranking would have picked anyway, so the
+file doesn't fill up with entries restating the default. An override naming a
+file that no longer exists (the title was reinstalled differently, say) falls
+back to the automatic choice rather than failing.
+
+`launch_game` takes that path as an optional `executable` argument and resolves
+it through `resolve_chosen`, which refuses absolute paths, any `..` component,
+and — after canonicalising, so a symlink can't stand in for one — anything
+landing outside the install directory. This is stricter than the download path
+deliberately: the value here becomes the program that gets spawned.
 
 ### Encoded slashes in game ids
 
@@ -346,6 +367,14 @@ of the Switch pick, argument quoting — and `install_state.rs`'s progress
 arithmetic, path-segment encoding, and error-detail extraction. Run both from
 `src-tauri/`. Note that `cargo check` needs the system webview headers listed
 under prerequisites even though it never links a GUI.
+
+The frontend is exercised against a real DOM under jsdom with a mocked Tauri
+runtime — including the launch picker end to end: that it appears only for a
+title with several candidates, offers them best-first, persists a choice,
+passes it to `launch_game`, drops an override that merely restates the default,
+disappears on uninstall, keeps the arrow-key chain free of dead steps whether
+or not it is showing, and leaves Play working when the candidate lookup fails
+outright.
 
 The server side's scanning and routes are covered separately by fixture tests
 that build real game folders, including a simulated install that fetches every

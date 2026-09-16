@@ -86,7 +86,9 @@ The entry point is listed first, which costs nothing and means the most
 interesting file arrives before a long tail of assets. It carries no other
 marking: the client re-derives what to launch from the install directory
 itself, because what matters at launch is what landed on disk rather than what
-the source library looked like.
+the source library looked like — and because a title with several executables,
+or several discs, is one the client lets you choose between at launch time
+rather than deciding for you here.
 
 ## Endpoints
 

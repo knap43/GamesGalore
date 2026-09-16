@@ -16,6 +16,7 @@ fn main() {
             install_state::uninstall_game,
             install_state::cancel_install,
             launcher::launch_game,
+            launcher::list_launch_candidates,
             settings::get_settings,
             settings::save_settings,
         ])
