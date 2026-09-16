@@ -150,11 +150,16 @@ async fn download_file(
     file: &GameFile,
     dest_dir: &Path,
 ) -> Result<bool, String> {
+    // The filename is encoded per-segment for the same reason the id is:
+    // it can carry subdirectories of its own ("bin/game.exe") when a PC
+    // game's executable lives inside its tree, and those separators have
+    // to survive into the URL for the server's route to split them back
+    // out. Encoding it in one pass would turn them into %2F.
     let url = format!(
         "{}/download/{}/{}",
         server_base.trim_end_matches('/'),
         encode_path_segments(game_id),
-        urlencoding::encode(&file.filename),
+        encode_path_segments(&file.filename),
     );
 
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
@@ -174,9 +179,15 @@ async fn download_file(
     } else {
         file.filename.clone()
     };
-    let mut out = fs::File::create(dest_dir.join(&dest_filename))
-        .await
-        .map_err(|e| e.to_string())?;
+
+    // dest_filename can be a relative path rather than a bare name (see
+    // the URL comment above), so its parent directories may not exist
+    // yet — File::create doesn't make them, it just fails.
+    let dest_path = dest_dir.join(&dest_filename);
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+    }
+    let mut out = fs::File::create(&dest_path).await.map_err(|e| e.to_string())?;
 
     let mut stream = response.bytes_stream();
     let mut downloaded: u64 = 0;

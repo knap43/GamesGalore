@@ -41,7 +41,8 @@ systemctl enable --now vault-server
 <LIBRARY_ROOT>/
   PS1/  PS2/  PC/  Switch/
     <Game Title>/
-      *.bin/*.cue | *.iso | *.exe | *.nsz | *.nsp   <- game file(s)
+      *.bin/*.cue | *.iso | *.nsz | *.nsp            <- game file(s)
+      <a whole installed tree, for PC>               <- see below
       *.png / *.jpg                                  <- loose screenshots
       *trailer*.mp4                                  <- optional
       README.md                                      <- "Title (Year)\n\nDescription..."
@@ -50,18 +51,48 @@ systemctl enable --now vault-server
 A game's id is `<Platform>/<Title>`. The cover is whichever screenshot has
 "cover" in its filename, falling back to the first alphabetically.
 
+Only the screenshots, trailer and README have to sit at the top level — those
+three are catalog metadata. Everything else under a game's folder, at any depth,
+is the game, and counts toward its reported size.
+
+## PC games are trees, not files
+
+A PC title is normally a full installed tree rather than a single file, which
+affects two things:
+
+- **Size** is the whole folder, walked recursively. Measuring only the top level
+  reports a fraction of a real game — frequently just its uninstaller.
+- **The executable** is searched for across the whole tree, since a game's `.exe`
+  is as often in a `bin/` subdirectory as beside its data. The pick prefers an
+  executable that isn't an installer or bundled runtime (`unins*`, `vcredist`,
+  `dxsetup`, crash handlers and so on), then one whose name matches the game's
+  folder title, then the shallowest, then the largest, breaking ties on name so
+  the result is stable across scans. If everything present looks like an
+  installer, the best of those is still returned rather than reporting no game
+  file at all.
+
+A game file's `filename` is therefore relative to the game folder and may
+contain subdirectories (`bin/game.exe`). The client applies the same rule again
+on its own side at launch time, against what actually landed on disk.
+
 ## Endpoints
 
 - `GET /library` — full catalog as JSON. Rescans the filesystem on every call,
   which is fine at ~500 titles; worth caching plus a manual rescan trigger if
   that ever gets slow.
-- `GET /media/<game_id>/<filename>` — a screenshot or trailer.
-- `GET /download/<game_id>/<filename>` — a game file. If it's already `.nsp` (or
-  any non-Switch format), it's streamed as-is. If it's `.nsz`, it's decompressed
-  first — see below.
+- `GET /media/<platform>/<title>/<filename>` — a screenshot or trailer.
+- `GET /download/<platform>/<title>/<filename>` — a game file. If it's already
+  `.nsp` (or any non-Switch format), it's streamed as-is. If it's `.nsz`, it's
+  decompressed first — see below.
 - `GET /status` — whether `nsz` is installed on this machine, and its version.
   The client checks this before offering to install any Switch title, rather
   than finding out mid-transfer.
+
+The game id makes up the first two segments of the media and download paths
+rather than being matched as one greedy `<path:>` converter, so that a
+`filename` containing its own subdirectories splits correctly. Matched the other
+way, `PC/Some Game/bin/game.exe` would be read as the id `PC/Some Game/bin` and
+the filename `game.exe`, which resolves to nothing.
 
 ## Mixed nsz/nsp folders
 
@@ -98,15 +129,23 @@ it beyond your own network.
 
 ## Known gaps
 
-- **PS1/PS2 titles that come as a `.bin`/`.cue` pair are broken.**
-  `_find_game_files` returns only the `.cue` as the game's single file — while
-  reporting the combined size of every file in the folder. Since
-  `/download` refuses any filename not in that list, the `.bin` holding the
-  actual disc data can never be fetched: the client installs a few-hundred-byte
-  `.cue`, marks the title installed, and the emulator then fails to find the
-  data it points at. The fix is to return every candidate file and keep the
-  `.cue` as the one handed to the emulator, which the client's `launcher.rs`
-  already selects for.
+- **A game's catalog entry lists only its entry-point file, so multi-file
+  titles install as an unusable stub.** `_find_game_files` returns one
+  `GameFile` for PS1/PS2 and PC — the `.cue` or the `.exe` — while correctly
+  reporting the size of everything around it. Since `/download` refuses any
+  filename not in that list, the `.bin` holding a disc's data, or the whole
+  tree a PC game needs, can never be fetched: the client downloads the entry
+  point, marks the title installed, and the emulator then fails on the data
+  that isn't there.
+
+  Size reporting and executable detection are correct as of this pass — a PC
+  title now reports its true footprint and resolves to the right `.exe` — but
+  the transfer itself still moves one file. Fixing it means returning every
+  file in the folder and keeping the entry point flagged as the one to launch,
+  which both `launcher.rs` and `_pick_pc_executable` already determine
+  independently. The client side is ready for it: nested paths round-trip
+  through the download route, and `install_game` creates parent directories as
+  it writes.
 - **No auth on any of this** — fine on a trusted LAN, not fine beyond it.
 - **The catalog is only populated by `/library`.** `_reload_catalog()` runs at
   startup and on each `/library` call; `/media` and `/download` both look games

@@ -11,7 +11,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | --- | --- |
 | `server.rs` | Fetches the catalog (`GET /library`) and the server's `nsz` status (`GET /status`). `Game` and `GameFile` mirror the server's JSON shape exactly. |
 | `install_state.rs` | The local record of what's on this machine (`installs.json` in the app data dir, keyed by `Game.id`), plus `install_game`, `uninstall_game` and `cancel_install`. |
-| `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. |
+| `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, and per-platform emulator config. |
 
@@ -27,6 +27,26 @@ downloads every file in `game.files` the same way regardless of platform,
 streaming each to disk and reporting progress as it goes. If the requested file
 was `.nsz`, what arrives is already a `.nsp`; the client renames it accordingly
 and never invokes anything.
+
+### Choosing what to launch
+
+`find_local_game_file` walks the install directory recursively rather than
+listing its top level. A PC game is an installed tree, so the executable is
+frequently not at the top level at all — and where it is, the first file
+alphabetically beside it is as likely to be an uninstaller as the game.
+
+For PC it applies the same ranking the server's `_pick_pc_executable` uses when
+cataloguing: prefer an executable that isn't an installer or bundled runtime
+(`unins*`, `vcredist`, `dxsetup`, crash handlers), then one whose name matches
+the game's own folder title, then the shallowest, then the largest, breaking
+ties on name so the choice is stable across launches. PS1/PS2 still resolve to
+the `.cue`. The decision is made here against the real install directory rather
+than trusting the catalog, since the catalog describes the source library, not
+what actually landed on this disk.
+
+The two rankings are duplicated deliberately — one is in Python on the server,
+the other in Rust on the client — so if you change the exclusion list, change
+both. `NON_GAME_EXE_MARKERS` exists under that name in each.
 
 ### Encoded slashes in game ids
 
@@ -272,12 +292,14 @@ you've confirmed that's the only dialog capability in use.
 
 ## Known gaps
 
-- **PS1/PS2 multi-file titles don't install correctly.** The server's catalog
-  lists only the `.cue` for a `.bin`/`.cue` pair, so only the `.cue` is
-  downloaded and `/download` will 404 the `.bin` outright — while the reported
-  size covers both. Launching such a title will fail at the emulator. Fixing
-  this means having `library.py` return every file in the folder and keeping the
-  `.cue` as the one handed to the emulator, which `launcher.rs` already does.
+- **Multi-file titles install as an unusable stub.** The server's catalog lists
+  one entry-point file per PS1/PS2 and PC title — the `.cue` or the `.exe` —
+  and `/download` 404s anything else, so the `.bin` holding a disc's data, or
+  the tree a PC game needs, never arrives. Launching such a title fails at the
+  emulator. The reported size is right; the transfer isn't. Fixing it means
+  having `library.py` return every file in the folder, which this side is
+  already prepared for: nested paths round-trip through the download route and
+  `install_game` creates parent directories as it writes.
 - **Aggregate install progress.** Progress is per-file percentage, not overall
   bytes across all of a title's files.
 - **Playtime tracking.** Deliberately deferred, not an oversight. The "Recently
@@ -294,11 +316,17 @@ you've confirmed that's the only dialog capability in use.
 
 ## Verification status
 
-The Rust sources have been reviewed and syntax-checked with `rustc`, but not
-type-checked end-to-end: an attempt at a full `cargo check` against the real
-`reqwest`/`tokio` dependency graph ran aground on a toolchain too old for those
-crates' current transitive requirements (see the `rustup` note above). Worth a
-real `cargo check` before trusting it fully.
+The Rust sources now type-check end-to-end: `cargo check` passes clean on Rust
+1.94 with no errors and no warnings. An earlier attempt had run aground on a
+toolchain too old for the dependency graph's current requirements, which is what
+the `rustup` note above is about; that is no longer a live problem on a current
+toolchain.
+
+`cargo test` covers `launcher.rs`'s file resolution against real temporary
+directories — the PC executable search across subdirectories, its exclusion of
+installers, the PS1/PS2 `.cue` rule, stability of the Switch pick, and argument
+quoting. Run both from `src-tauri/`. Note that `cargo check` needs the system
+webview headers listed under prerequisites even though it never links a GUI.
 
 The frontend has been exercised harder: the full mock-mode flow (load → open a
 game → install → uninstall → back → open settings → toggle sound → close) plus
