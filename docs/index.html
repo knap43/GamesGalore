@@ -653,29 +653,118 @@
      launching — several .exe files, or a multi-disc PS1/PS2 game's
      .cue sheets. Deliberately understated next to the Play button:
      it's a correction for the minority of titles where the automatic
-     choice is wrong, not a step in the normal flow. */
+     choice is wrong, not a step in the normal flow.
+
+     Built from a button and a panel rather than a <select>, because a
+     native select's option list is drawn by the OS, not by the page —
+     styling `option` does nothing in WebKitGTK, so the menu came out
+     as a grey box with a blue system highlight no matter what this
+     stylesheet said. The trigger below borrows the secondary button's
+     proportions and the menu borrows the modal's panel treatment and
+     the sidebar's active-row gradient, so the whole thing is made of
+     pieces already in use elsewhere in the app. */
   .launch-picker {
     display: none;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
+  }
+  .launch-label {
     font-size: 12.5px;
-    color: var(--text-muted);
+    color: var(--text-faint);
+    letter-spacing: 0.02em;
   }
-  .launch-select {
-    max-width: 320px;
-    padding: 9px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--border-hair-2);
+  .launch-dropdown { position: relative; }
+  .launch-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 300px;
+    /* Matches .cta-button's box so the row's three controls share a
+       baseline and a height, rather than the picker sitting short. */
+    padding: 15px 16px;
+    border-radius: var(--radius-card);
+    border: 2px solid var(--border-hair-2);
     background: var(--bg-card);
-    color: var(--text-primary);
+    color: var(--text-muted);
     font-family: var(--font-body);
-    font-size: 13px;
+    font-size: 14px;
     cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
+    transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
   }
-  .launch-select:hover { background: var(--bg-card-top); }
-  .launch-select:focus-visible { outline: 2px solid var(--accent-violet); outline-offset: 2px; border-color: transparent; }
-  .launch-select option { background: var(--bg-card); color: var(--text-primary); }
+  .launch-trigger:hover { background: var(--bg-card-top); color: var(--text-primary); }
+  .launch-trigger:focus-visible { outline: 2px solid var(--accent-violet); outline-offset: 4px; }
+  .launch-trigger[aria-expanded="true"] {
+    background: var(--bg-card-top);
+    color: var(--text-primary);
+    border-color: rgba(255,79,158,0.35);
+  }
+  .launch-current { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .launch-chevron {
+    width: 15px; height: 15px;
+    flex-shrink: 0;
+    opacity: 0.8;
+    transition: transform 0.16s ease;
+  }
+  .launch-trigger[aria-expanded="true"] .launch-chevron { transform: rotate(180deg); }
+
+  .launch-menu {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    min-width: 100%;
+    max-width: 440px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border-hair-2);
+    border-radius: 12px;
+    box-shadow: 0 30px 60px -20px rgba(0,0,0,0.6);
+    /* Above the detail view, below the settings modal's backdrop (50). */
+    z-index: 40;
+  }
+  .launch-menu[hidden] { display: none; }
+  .launch-option {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    width: 100%;
+    padding: 9px 11px;
+    border-radius: 7px;
+    border: 1px solid transparent;
+    background: transparent;
+    font-family: var(--font-body);
+    font-size: 13.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .launch-option:hover { background: rgba(255,255,255,0.04); color: var(--text-primary); }
+  /* Selected and highlighted are different things and can coexist —
+     one is the saved choice, the other is where the keyboard is — so
+     the highlight is a ring rather than a fill that would overwrite
+     the selected row's gradient. */
+  .launch-option.selected {
+    color: var(--text-primary);
+    background: linear-gradient(90deg, rgba(255,79,158,0.14), rgba(155,92,246,0.09));
+    border-color: rgba(255,79,158,0.18);
+  }
+  .launch-option.highlighted {
+    color: var(--text-primary);
+    box-shadow: 0 0 0 1px rgba(255,79,158,0.45) inset;
+  }
+  .launch-option-name { overflow: hidden; text-overflow: ellipsis; }
+  .launch-option-dir { color: var(--text-faint); }
+  .launch-check {
+    width: 15px; height: 15px;
+    flex-shrink: 0;
+    fill: var(--accent-pink);
+    opacity: 0;
+  }
+  .launch-option.selected .launch-check { opacity: 1; }
   .cta-button svg { width: 17px; height: 17px; fill: currentColor; }
 
   .install-progress {
@@ -1026,10 +1115,17 @@
       <div class="cta-row">
         <button class="cta-button" id="cta-button"></button>
         <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
-        <label class="launch-picker" id="launch-picker">
-          <span>Launch</span>
-          <select class="launch-select" id="launch-select" aria-label="Which file to launch"></select>
-        </label>
+        <div class="launch-picker" id="launch-picker">
+          <span class="launch-label" id="launch-label">Launch</span>
+          <div class="launch-dropdown">
+            <button class="launch-trigger" id="launch-trigger" type="button"
+                    aria-haspopup="listbox" aria-expanded="false" aria-labelledby="launch-label launch-current">
+              <span class="launch-current" id="launch-current"></span>
+              <svg class="launch-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+            </button>
+            <div class="launch-menu" id="launch-menu" role="listbox" aria-label="Which file to launch" hidden></div>
+          </div>
+        </div>
         <span class="game-size" id="game-size"></span>
       </div>
 
@@ -1419,27 +1515,127 @@ async function refreshLaunchCandidates(game) {
   if (currentDetailId === game.id) renderLaunchPicker(game);
 }
 
-function renderLaunchPicker(game) {
-  const picker = document.getElementById('launch-picker');
-  const select = document.getElementById('launch-select');
+let launchHighlight = 0; // keyboard position within the open menu
 
-  // One candidate is not a choice, and neither is none.
-  if (launchCandidates.length < 2) {
-    picker.style.display = 'none';
-    select.innerHTML = '';
-    return;
-  }
-
+function selectedCandidate(game) {
   const override = state.launchOverrides[game.id];
   // An override naming a file that's no longer there (the title was
   // reinstalled differently, say) falls back to the automatic pick
   // rather than selecting nothing at all.
-  const selected = launchCandidates.includes(override) ? override : launchCandidates[0];
+  return launchCandidates.includes(override) ? override : launchCandidates[0];
+}
 
-  select.innerHTML = launchCandidates
-    .map(name => `<option value="${escapeAttr(name)}"${name === selected ? ' selected' : ''}>${escapeHTML(name)}</option>`)
-    .join('');
+/* Splits "bin/game.exe" so the directory can be dimmed and the
+   filename kept legible, the same way the grid dims a card's
+   secondary line. */
+function splitPath(name) {
+  const i = name.lastIndexOf('/');
+  return i === -1
+    ? { dir: '', base: name }
+    : { dir: name.slice(0, i + 1), base: name.slice(i + 1) };
+}
+
+function renderLaunchPicker(game) {
+  const picker = document.getElementById('launch-picker');
+  const menu = document.getElementById('launch-menu');
+  const current = document.getElementById('launch-current');
+
+  // One candidate is not a choice, and neither is none.
+  if (launchCandidates.length < 2) {
+    closeLaunchMenu();
+    picker.style.display = 'none';
+    menu.innerHTML = '';
+    return;
+  }
+
+  const selected = selectedCandidate(game);
+  const { base } = splitPath(selected);
+  current.textContent = base;
+  document.getElementById('launch-trigger').title = selected;
+
+  menu.innerHTML = launchCandidates.map((name, i) => {
+    const { dir, base } = splitPath(name);
+    const isSelected = name === selected;
+    return `
+      <button type="button" class="launch-option${isSelected ? ' selected' : ''}"
+              role="option" aria-selected="${isSelected}" id="launch-option-${i}"
+              data-launch-name="${escapeAttr(name)}" title="${escapeAttr(name)}">
+        <span class="launch-option-name">${dir ? `<span class="launch-option-dir">${escapeHTML(dir)}</span>` : ''}${escapeHTML(base)}</span>
+        <svg class="launch-check" viewBox="0 0 24 24"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+      </button>`;
+  }).join('');
+
   picker.style.display = 'inline-flex';
+}
+
+function isLaunchMenuOpen() {
+  const menu = document.getElementById('launch-menu');
+  return !!menu && !menu.hidden;
+}
+
+function openLaunchMenu() {
+  if (launchCandidates.length < 2) return;
+  const game = GAMES.find(g => g.id === currentDetailId);
+  if (!game) return;
+
+  document.getElementById('launch-menu').hidden = false;
+  document.getElementById('launch-trigger').setAttribute('aria-expanded', 'true');
+  // Opens on the current choice rather than the top of the list, so
+  // arrowing starts from where things actually stand.
+  launchHighlight = Math.max(0, launchCandidates.indexOf(selectedCandidate(game)));
+  applyLaunchHighlight();
+}
+
+function closeLaunchMenu() {
+  const menu = document.getElementById('launch-menu');
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  document.getElementById('launch-trigger').setAttribute('aria-expanded', 'false');
+  // Focus goes back to the trigger, not nowhere — otherwise the
+  // arrow-key chain has nothing to move from.
+  focusNoScroll(document.getElementById('launch-trigger'));
+}
+
+function toggleLaunchMenu() {
+  if (isLaunchMenuOpen()) closeLaunchMenu();
+  else openLaunchMenu();
+}
+
+function applyLaunchHighlight() {
+  const options = [...document.querySelectorAll('.launch-option')];
+  options.forEach((el, i) => el.classList.toggle('highlighted', i === launchHighlight));
+  const active = options[launchHighlight];
+  if (!active) return;
+  // Set before scrolling, so the assistive-technology hook doesn't
+  // depend on a scroll call succeeding.
+  document.getElementById('launch-menu').setAttribute('aria-activedescendant', active.id);
+  active.scrollIntoView({ block: 'nearest' });
+}
+
+function moveLaunchHighlight(delta) {
+  const count = launchCandidates.length;
+  if (!count) return;
+  // Wraps, matching how the grid's own navigation behaves at an edge
+  // rather than silently doing nothing.
+  launchHighlight = (launchHighlight + delta + count) % count;
+  applyLaunchHighlight();
+  playMoveSound();
+}
+
+function commitLaunchChoice(name) {
+  const game = GAMES.find(g => g.id === currentDetailId);
+  closeLaunchMenu();
+  if (!game || !launchCandidates.includes(name)) return;
+
+  // Only recorded when it differs from what the backend would have
+  // chosen anyway, so settings.json doesn't fill up with entries that
+  // restate the default — and so a title whose ranking later improves
+  // isn't pinned to a choice nobody deliberately made.
+  if (name === launchCandidates[0]) delete state.launchOverrides[game.id];
+  else state.launchOverrides[game.id] = name;
+
+  persistSettings();
+  renderLaunchPicker(game);
 }
 
 /* Filenames come off a real filesystem and can contain & < > " — which
@@ -2143,6 +2339,17 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  if (e.target.closest('#launch-trigger')) {
+    toggleLaunchMenu();
+    return;
+  }
+
+  const option = e.target.closest('.launch-option');
+  if (option) {
+    commitLaunchChoice(option.dataset.launchName);
+    return;
+  }
+
   const cancelBtn = e.target.closest('#cancel-install-button');
   if (cancelBtn) {
     const game = GAMES.find(g => g.id === currentDetailId);
@@ -2179,19 +2386,13 @@ document.addEventListener('click', (e) => {
   }
 });
 
-document.getElementById('launch-select').addEventListener('change', (e) => {
-  const game = GAMES.find(g => g.id === currentDetailId);
-  if (!game) return;
-  // Only recorded when it differs from what the backend would have
-  // chosen anyway, so settings.json doesn't fill up with entries that
-  // restate the default — and so a title whose ranking later improves
-  // isn't pinned to a choice nobody deliberately made.
-  if (e.target.value === launchCandidates[0]) {
-    delete state.launchOverrides[game.id];
-  } else {
-    state.launchOverrides[game.id] = e.target.value;
-  }
-  persistSettings();
+/* Clicking anywhere that isn't the dropdown closes it. Registered
+   separately from the main click handler because that one returns
+   early on the controls it recognises, and this has to run for every
+   click regardless. Clicks inside the dropdown are excluded, so the
+   trigger's own toggle isn't immediately undone by this. */
+document.addEventListener('click', (e) => {
+  if (isLaunchMenuOpen() && !e.target.closest('.launch-dropdown')) closeLaunchMenu();
 });
 
 document.getElementById('server-base-input').addEventListener('change', (e) => {
@@ -2223,6 +2424,23 @@ async function browseForInstallRoot() {
 document.addEventListener('keydown', (e) => {
   const active = document.activeElement;
 
+  // An open launch menu owns every key it recognises, before anything
+  // else looks at them: Escape would otherwise close the whole detail
+  // view out from under it, Enter would re-toggle the trigger rather
+  // than choosing a row, and the arrows would move focus around
+  // behind the open panel. Routed through the same moveDirection and
+  // activateFocused the gamepad uses, so both input paths behave
+  // identically here as they do everywhere else.
+  if (isLaunchMenuOpen()) {
+    const menuDir = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[e.key];
+    if (e.key === 'Escape' || e.key === 'Backspace') closeLaunchMenu();
+    else if (e.key === 'Enter' || e.key === ' ') { playSelectSound(); activateFocused(); }
+    else if (menuDir) moveDirection(menuDir);
+    else return; // Tab, typing, anything else: not the menu's business
+    e.preventDefault();
+    return;
+  }
+
   // Enter/Space activates the focused control — both our custom divs
   // (role="button") and real <button> elements are handled manually
   // here rather than left to native activation, so keyboard and
@@ -2252,14 +2470,13 @@ document.addEventListener('keydown', (e) => {
   const dir = dirMap[e.key];
   if (!dir) return;
 
-  // Leave native arrow behavior alone for the sort <select> entirely,
-  // and for horizontal movement inside any text input (so text editing
-  // isn't hijacked) — only Up/Down repurpose into moving between
-  // fields. moveDirection() below is the single source of truth for
-  // where each field actually leads, shared with the gamepad poll
-  // loop, which drives all four directions unconditionally since a
-  // D-pad has no "text cursor" concept to preserve in the first place.
-  if (active && active.tagName === 'SELECT') return;
+  // Leave native arrow behavior alone for horizontal movement inside
+  // any text input (so text editing isn't hijacked) — only Up/Down
+  // repurpose into moving between fields. moveDirection() below is the
+  // single source of truth for where each field actually leads, shared
+  // with the gamepad poll loop, which drives all four directions
+  // unconditionally since a D-pad has no "text cursor" concept to
+  // preserve in the first place.
   if (active && active.tagName === 'INPUT' && (dir === 'left' || dir === 'right')) return;
 
   e.preventDefault();
@@ -2396,6 +2613,14 @@ function focusActiveThumb() {
 }
 
 function goBack() {
+  // The launch menu is the innermost thing that can be open, so it's
+  // what backing out closes first — from the gamepad's B button as
+  // well as Escape.
+  if (isLaunchMenuOpen()) {
+    playBackSound();
+    closeLaunchMenu();
+    return;
+  }
   if (isSettingsOpen()) {
     playBackSound();
     closeSettings();
@@ -2408,6 +2633,13 @@ function goBack() {
 }
 
 function activateFocused() {
+  // Focus stays on the trigger while the menu is open — the highlight
+  // is tracked separately — so activation has to consult that rather
+  // than clicking whatever happens to hold focus.
+  if (isLaunchMenuOpen()) {
+    commitLaunchChoice(launchCandidates[launchHighlight]);
+    return;
+  }
   if (!document.activeElement) return;
   playSelectSound();
   document.activeElement.click();
@@ -2417,6 +2649,15 @@ function activateFocused() {
    handler above and the gamepad D-pad/stick polling below — so a
    controller and a keyboard drive the exact same navigation model. */
 function moveDirection(dir) {
+  // While the menu is open the arrows move its highlight instead of
+  // moving focus around the page behind it. Left/Right are swallowed
+  // rather than escaping sideways out of an open panel.
+  if (isLaunchMenuOpen()) {
+    if (dir === 'up') moveLaunchHighlight(-1);
+    else if (dir === 'down') moveLaunchHighlight(1);
+    return;
+  }
+
   const active = document.activeElement;
   if (!active) { focusFirstCard(); return; }
 
@@ -2508,7 +2749,7 @@ function moveDirection(dir) {
   if (active.id === 'cta-button') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button', 'launch-select'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button', 'launch-trigger'));
     return;
   }
 
@@ -2516,11 +2757,11 @@ function moveDirection(dir) {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
     else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-select'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-trigger'));
     return;
   }
 
-  if (active.id === 'launch-select') {
+  if (active.id === 'launch-trigger') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
     else if (dir === 'left') focusNoScroll(nextCtaTarget('uninstall-button', 'cta-button'));

@@ -76,6 +76,18 @@ installed title, ranked, and the Play row grows a dropdown whenever there are
 two or more. One candidate is not a choice, so the picker stays hidden, which
 is the common case.
 
+The dropdown is a button and a panel rather than a `<select>`. A native
+select's option list is drawn by the OS, not the page — `option` styling does
+nothing in WebKitGTK, so it rendered as a grey box with a blue system highlight
+regardless of the stylesheet. The replacement is assembled from parts already
+in use: the secondary button's proportions for the trigger, the settings
+modal's panel treatment for the menu, and the sidebar's active-row gradient for
+the current choice. It carries `role="listbox"`, and because focus stays on the
+trigger while the menu is open, arrow keys and the gamepad move a tracked
+highlight rather than page focus — routed through the same `moveDirection` and
+`activateFocused` everything else uses, with `goBack` closing the menu before
+the detail view.
+
 A selection is stored in `settings.json` under `launch_overrides`, keyed by
 `Game.id` and valued with a path relative to that game's install directory —
 and only when it differs from what the ranking would have picked anyway, so the
