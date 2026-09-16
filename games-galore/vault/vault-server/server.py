@@ -7,10 +7,15 @@ filesystem access to the library, and never needs Python or `nsz`
 installed at all — both stay here.
 
 Endpoints:
-  GET /library                          -> full catalog, JSON
-  GET /media/<game_id>/<filename>       -> a screenshot or trailer
-  GET /download/<game_id>/<filename>    -> a game file (converts nsz -> nsp first if needed)
-  GET /status                           -> whether `nsz` is available on this machine
+  GET /library                                  -> full catalog, JSON
+  GET /media/<platform>/<title>/<filename>      -> a screenshot or trailer
+  GET /download/<platform>/<title>/<filename>   -> a game file (converts nsz -> nsp first if needed)
+  GET /status                                   -> whether `nsz` is available on this machine
+
+A game's id is "<platform>/<title>", which is why those two make up the
+first half of the media and download paths. `filename` is relative to
+the game's folder and may itself contain subdirectories, since a PC
+game's executable often sits inside its tree rather than beside it.
 """
 
 from __future__ import annotations
@@ -47,34 +52,42 @@ def library_route():
     for game in _catalog.values():
         d = game.to_dict()
         d["screenshots"] = [
-            url_for("media_route", game_id=game.id, filename=s, _external=True)
-            for s in game.screenshots
+            _media_url(game, s) for s in game.screenshots
         ]
-        d["cover"] = (
-            url_for("media_route", game_id=game.id, filename=game.cover, _external=True)
-            if game.cover
-            else None
-        )
-        d["trailer"] = (
-            url_for("media_route", game_id=game.id, filename=game.trailer, _external=True)
-            if game.trailer
-            else None
-        )
+        d["cover"] = _media_url(game, game.cover) if game.cover else None
+        d["trailer"] = _media_url(game, game.trailer) if game.trailer else None
         payload.append(d)
     return jsonify(payload)
 
 
-@app.route("/media/<path:game_id>/<filename>")
-def media_route(game_id: str, filename: str):
-    game_dir = _resolve_game_dir(game_id)
+def _media_url(game, filename: str) -> str:
+    return url_for(
+        "media_route",
+        platform=game.platform,
+        title=game.title,
+        filename=filename,
+        _external=True,
+    )
+
+
+# Platform and title are matched as single segments and the filename
+# takes everything after them, so a file inside a game's subdirectory
+# ("PC/Some Game/bin/game.exe") splits correctly. Matching the game id
+# itself with a greedy <path:> converter instead would swallow those
+# leading subdirectories into the id and leave only the basename as the
+# filename, which no lookup would then resolve.
+@app.route("/media/<platform>/<title>/<path:filename>")
+def media_route(platform: str, title: str, filename: str):
+    game_dir = _resolve_game_dir(f"{platform}/{title}")
     path = _safe_join(game_dir, filename)
     if path.suffix.lower() not in STATIC_MEDIA_EXTENSIONS:
         abort(403)
     return send_file(path, conditional=True)
 
 
-@app.route("/download/<path:game_id>/<filename>")
-def download_route(game_id: str, filename: str):
+@app.route("/download/<platform>/<title>/<path:filename>")
+def download_route(platform: str, title: str, filename: str):
+    game_id = f"{platform}/{title}"
     game = _catalog.get(game_id)
     if game is None:
         abort(404, "unknown game id")

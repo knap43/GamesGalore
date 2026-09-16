@@ -6,10 +6,22 @@ Folder layout:
     <library_root>/
       PS1/  PS2/  PC/  Switch/
         <Game Title>/
-          *.bin/*.cue | *.iso | *.exe | *.nsz | *.nsp   <- game file(s)
+          *.bin/*.cue | *.iso | *.nsz | *.nsp            <- game file(s)
+          <a whole installed tree, for PC>               <- see below
           *.png / *.jpg                                  <- loose screenshots
-          trailer.mp4                                    <- optional
+          *trailer*.mp4                                  <- optional
           README.md                                      <- "Title (Year)\n\nDescription..."
+
+Only the screenshots, trailer and README are required to sit at the top
+level of a game's folder; those three are catalog metadata, and
+everything else under the folder, at any depth, is the game itself.
+
+PC is the platform where that distinction matters most. A PC title is
+normally a full installed tree — an .exe somewhere among its data
+directories — rather than a single file, so both the reported size and
+the choice of what to hand Wine have to consider the whole tree. Only
+looking at the top level gets a title's size badly wrong and, when the
+.exe lives in a subdirectory, finds no game file at all.
 
 Switch is the one platform where a folder can hold more than one game
 file — a base game plus updates or DLC — and each of those files is
@@ -32,6 +44,34 @@ README_NAME = "README.md"
 SWITCH_EXTENSIONS = {".nsz", ".nsp"}
 
 YEAR_RE = re.compile(r"\(([0-9]{4})\)\s*$")
+
+# Executables that ship alongside a PC game but aren't the game: its
+# uninstaller, bundled runtime installers, crash reporters, separate
+# config tools. Matched as a substring of the filename, case-insensitively.
+NON_GAME_EXE_MARKERS = (
+    "unins",
+    "setup",
+    "install",
+    "redist",
+    "vcredist",
+    "directx",
+    "dxsetup",
+    "dotnet",
+    "oalinst",
+    "crashhandler",
+    "crashreport",
+    "crashpad",
+    "config",
+)
+
+NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalized(text: str) -> str:
+    """Lowercased, stripped of punctuation and spacing, for comparing a
+    filename against a folder title without tripping over "Moth & Ember"
+    vs. "MothAndEmber" style differences."""
+    return NON_ALNUM_RE.sub("", text.lower())
 
 
 def _is_trailer_file(filename: str) -> bool:
@@ -154,47 +194,137 @@ def _find_trailer(game_dir: Path):
     return matches[0] if matches else None
 
 
-def _find_game_files(game_dir: Path, platform: str) -> list:
-    candidates = [
+def _is_catalog_metadata(game_dir: Path, path: Path) -> bool:
+    """
+    Whether a file is catalog furniture rather than part of the game —
+    the README, the trailer, the loose screenshots. Only ever true at
+    the top level of a game folder: images nested inside a PC game's
+    own subdirectories are its assets, and they count toward its size.
+    """
+    if path.parent != game_dir:
+        return False
+    return (
+        path.name == README_NAME
+        or _is_trailer_file(path.name)
+        or path.suffix.lower() in IMAGE_EXTENSIONS
+    )
+
+
+def _game_content_files(game_dir: Path) -> list:
+    """
+    Every file belonging to the game, at any depth. A PC game is usually
+    a whole installed tree — an .exe next to its data directories — so
+    anything that only looks at the top level of the folder sees a
+    fraction of it, or, when the .exe sits in a subdirectory, nothing
+    at all.
+    """
+    return sorted(
         f
-        for f in game_dir.iterdir()
-        if f.is_file()
-        and f.name != README_NAME
-        and not _is_trailer_file(f.name)
-        and f.suffix.lower() not in IMAGE_EXTENSIONS
-    ]
+        for f in game_dir.rglob("*")
+        if f.is_file() and not _is_catalog_metadata(game_dir, f)
+    )
+
+
+def _pick_pc_executable(game_dir: Path, files: list):
+    """
+    Picks the .exe to hand Wine, from anywhere in the game's tree.
+
+    Ranking, in order: prefer something that isn't an installer or
+    bundled runtime; then an executable whose name matches the game's
+    folder title; then the shallowest one, since a game's entry point
+    normally sits at the root of its own tree rather than buried in a
+    bin/ or redist/ subdirectory; then the largest, the main binary
+    usually being bigger than helper tools next to it. Ties break on
+    name so the choice is stable across scans.
+    """
+    exes = [f for f in files if f.suffix.lower() == ".exe"]
+    if not exes:
+        return None
+
+    lower = {f: f.name.lower() for f in exes}
+    preferred = [f for f in exes if not any(m in lower[f] for m in NON_GAME_EXE_MARKERS)]
+    # Every executable looking like an installer is better than claiming
+    # the game has none — fall back to the full list rather than bailing.
+    candidates = preferred or exes
+
+    title = _normalized(game_dir.name)
+
+    def rank(f: Path):
+        stem = _normalized(f.stem)
+        if stem == title:
+            title_match = 0
+        elif stem and (stem in title or title in stem):
+            title_match = 1
+        else:
+            title_match = 2
+        depth = len(f.relative_to(game_dir).parts) - 1
+        return (title_match, depth, -f.stat().st_size, f.name.lower())
+
+    return min(candidates, key=rank)
+
+
+def _game_file(game_dir: Path, path: Path) -> GameFile:
+    """
+    One catalog entry for one real file. `filename` is relative to the
+    game folder, so it carries the subdirectory when there is one
+    ("bin/game.exe"); the /download and /media routes accept that shape.
+    """
+    suffix = path.suffix.lower()
+    return GameFile(
+        filename=path.relative_to(game_dir).as_posix(),
+        format=suffix.lstrip("."),
+        needs_conversion=suffix == ".nsz",
+        size_bytes=path.stat().st_size,
+    )
+
+
+def _find_game_files(game_dir: Path, platform: str) -> list:
+    """
+    Every file the client needs in order to play the title, each with
+    its own real size — so a title's total is simply the sum of what
+    will actually be transferred.
+
+    Listing only the entry point (the .cue, the .exe) was the shape
+    this used to have, and it could not work: the download route serves
+    nothing that isn't in this list, so the .bin holding a disc's data,
+    or the tree a PC game needs, could never be fetched. The client
+    installed one file, marked the title installed, and the emulator
+    then failed on what wasn't there.
+
+    The entry point is listed first, which costs nothing and means the
+    most interesting file arrives before a long tail of assets. It
+    carries no special marking beyond that: the client re-derives what
+    to launch from the install directory itself, since what matters at
+    launch is what actually landed on disk.
+    """
+    files = _game_content_files(game_dir)
+    candidates = [f for f in files if f.parent == game_dir]
 
     if platform == "Switch":
+        # A Switch title is its .nsz/.nsp files and nothing else —
+        # there's no surrounding tree to bring along.
         return [
-            GameFile(
-                filename=f.name,
-                format=f.suffix.lower().lstrip("."),
-                needs_conversion=f.suffix.lower() == ".nsz",
-                size_bytes=f.stat().st_size,
-            )
+            _game_file(game_dir, f)
             for f in candidates
             if f.suffix.lower() in SWITCH_EXTENSIONS
         ]
 
-    if platform in {"PS1", "PS2"}:
-        cue = next((f for f in candidates if f.suffix.lower() == ".cue"), None)
-        chosen = cue or (candidates[0] if candidates else None)
+    if platform == "PC":
+        # Searched across the whole tree, not just the top level: a PC
+        # game's .exe is as often in a subdirectory as beside its data.
+        entry = _pick_pc_executable(game_dir, files)
+    elif platform in {"PS1", "PS2"}:
+        entry = next((f for f in candidates if f.suffix.lower() == ".cue"), None)
     else:
-        chosen = candidates[0] if candidates else None
+        entry = None
 
-    if chosen is None:
+    if entry is None:
+        # Nothing recognisable to lead with — prefer a top-level file,
+        # then anything at all, so a title with an unusual layout still
+        # appears in the catalog rather than vanishing from it.
+        entry = candidates[0] if candidates else (files[0] if files else None)
+    if entry is None:
         return []
 
-    # For a .cue, the actual game data sits in the sibling .bin(s), not
-    # the tiny text file itself — total footprint means every candidate
-    # file in the folder, even though only `chosen` is what gets handed
-    # to the emulator.
-    total_size = sum(f.stat().st_size for f in candidates)
-    return [
-        GameFile(
-            filename=chosen.name,
-            format=chosen.suffix.lower().lstrip("."),
-            needs_conversion=False,
-            size_bytes=total_size,
-        )
-    ]
+    ordered = [entry] + [f for f in files if f != entry]
+    return [_game_file(game_dir, f) for f in ordered]

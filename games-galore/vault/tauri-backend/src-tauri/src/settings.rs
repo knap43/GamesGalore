@@ -42,6 +42,17 @@ pub struct Settings {
     pub sound_enabled: bool,
     #[serde(default = "default_emulators")]
     pub emulators: HashMap<String, EmulatorConfig>,
+    /// Which file to launch for a given game id, when the automatic
+    /// choice isn't the right one — keyed by `Game.id`, valued with a
+    /// path relative to that game's install directory. Only titles
+    /// someone has actually picked for appear here; everything else
+    /// resolves through launcher.rs's ranking at launch time.
+    ///
+    /// Defaulted rather than required, so a settings.json written
+    /// before this field existed still loads instead of being silently
+    /// discarded and replaced with defaults.
+    #[serde(default)]
+    pub launch_overrides: HashMap<String, String>,
 }
 
 /// Best-known defaults — native binary names and the version flags
@@ -87,6 +98,7 @@ impl Default for Settings {
             install_root: String::new(),
             sound_enabled: true,
             emulators: default_emulators(),
+            launch_overrides: HashMap::new(),
         }
     }
 }
