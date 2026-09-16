@@ -75,6 +75,19 @@ A game file's `filename` is therefore relative to the game folder and may
 contain subdirectories (`bin/game.exe`). The client applies the same rule again
 on its own side at launch time, against what actually landed on disk.
 
+## What a title's file list contains
+
+`/library` lists **every** file the client needs in order to play a title, each
+with its own real size — the whole tree for a PC game, both halves of a
+`.bin`/`.cue` pair, each of a Switch title's `.nsp`/`.nsz` files. A title's
+total is simply the sum of what will actually be transferred.
+
+The entry point is listed first, which costs nothing and means the most
+interesting file arrives before a long tail of assets. It carries no other
+marking: the client re-derives what to launch from the install directory
+itself, because what matters at launch is what landed on disk rather than what
+the source library looked like.
+
 ## Endpoints
 
 - `GET /library` — full catalog as JSON. Rescans the filesystem on every call,
@@ -127,26 +140,28 @@ double-checks the resolved path is still inside the expected game folder.
 reasonable baseline for a LAN tool, not a substitute for review before exposing
 it beyond your own network.
 
+## Tests
+
+```
+.venv/bin/python test_server.py
+```
+
+Builds real game folders in a temporary directory, scans them, and runs the
+Flask app against that library — including a simulated install that fetches
+every file a title's catalog entry lists and compares the reconstructed tree
+byte-for-byte against the source. Needs nothing installed beyond `flask`; it
+never touches your real library and cleans up after itself.
+
 ## Known gaps
 
-- **A game's catalog entry lists only its entry-point file, so multi-file
-  titles install as an unusable stub.** `_find_game_files` returns one
-  `GameFile` for PS1/PS2 and PC — the `.cue` or the `.exe` — while correctly
-  reporting the size of everything around it. Since `/download` refuses any
-  filename not in that list, the `.bin` holding a disc's data, or the whole
-  tree a PC game needs, can never be fetched: the client downloads the entry
-  point, marks the title installed, and the emulator then fails on the data
-  that isn't there.
-
-  Size reporting and executable detection are correct as of this pass — a PC
-  title now reports its true footprint and resolves to the right `.exe` — but
-  the transfer itself still moves one file. Fixing it means returning every
-  file in the folder and keeping the entry point flagged as the one to launch,
-  which both `launcher.rs` and `_pick_pc_executable` already determine
-  independently. The client side is ready for it: nested paths round-trip
-  through the download route, and `install_game` creates parent directories as
-  it writes.
 - **No auth on any of this** — fine on a trusted LAN, not fine beyond it.
+- **`/library` rescans on every call and serves one file per request.** Both
+  are fine at this scale and both are the obvious things to change first if a
+  large PC library makes installs feel slow: a cached catalog with a manual
+  rescan trigger, and an endpoint that streams a whole title as one archive
+  instead of a request per file.
+- **Nothing prunes `CACHE_DIR`.** Converted `.nsp` files accumulate there
+  indefinitely; there's no size cap and no eviction.
 - **The catalog is only populated by `/library`.** `_reload_catalog()` runs at
   startup and on each `/library` call; `/media` and `/download` both look games
   up in it. That holds under `python server.py`, but a deployment that imports

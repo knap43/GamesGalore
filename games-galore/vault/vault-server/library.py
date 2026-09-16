@@ -225,10 +225,6 @@ def _game_content_files(game_dir: Path) -> list:
     )
 
 
-def _folder_size(files: list) -> int:
-    return sum(f.stat().st_size for f in files)
-
-
 def _pick_pc_executable(game_dir: Path, files: list):
     """
     Picks the .exe to hand Wine, from anywhere in the game's tree.
@@ -267,18 +263,48 @@ def _pick_pc_executable(game_dir: Path, files: list):
     return min(candidates, key=rank)
 
 
+def _game_file(game_dir: Path, path: Path) -> GameFile:
+    """
+    One catalog entry for one real file. `filename` is relative to the
+    game folder, so it carries the subdirectory when there is one
+    ("bin/game.exe"); the /download and /media routes accept that shape.
+    """
+    suffix = path.suffix.lower()
+    return GameFile(
+        filename=path.relative_to(game_dir).as_posix(),
+        format=suffix.lstrip("."),
+        needs_conversion=suffix == ".nsz",
+        size_bytes=path.stat().st_size,
+    )
+
+
 def _find_game_files(game_dir: Path, platform: str) -> list:
+    """
+    Every file the client needs in order to play the title, each with
+    its own real size — so a title's total is simply the sum of what
+    will actually be transferred.
+
+    Listing only the entry point (the .cue, the .exe) was the shape
+    this used to have, and it could not work: the download route serves
+    nothing that isn't in this list, so the .bin holding a disc's data,
+    or the tree a PC game needs, could never be fetched. The client
+    installed one file, marked the title installed, and the emulator
+    then failed on what wasn't there.
+
+    The entry point is listed first, which costs nothing and means the
+    most interesting file arrives before a long tail of assets. It
+    carries no special marking beyond that: the client re-derives what
+    to launch from the install directory itself, since what matters at
+    launch is what actually landed on disk.
+    """
     files = _game_content_files(game_dir)
     candidates = [f for f in files if f.parent == game_dir]
 
     if platform == "Switch":
+        # A Switch title is its .nsz/.nsp files and nothing else —
+        # there's no surrounding tree to bring along.
         return [
-            GameFile(
-                filename=f.name,
-                format=f.suffix.lower().lstrip("."),
-                needs_conversion=f.suffix.lower() == ".nsz",
-                size_bytes=f.stat().st_size,
-            )
+            _game_file(game_dir, f)
             for f in candidates
             if f.suffix.lower() in SWITCH_EXTENSIONS
         ]
@@ -286,34 +312,19 @@ def _find_game_files(game_dir: Path, platform: str) -> list:
     if platform == "PC":
         # Searched across the whole tree, not just the top level: a PC
         # game's .exe is as often in a subdirectory as beside its data.
-        chosen = _pick_pc_executable(game_dir, files)
-        if chosen is None:
-            # No executable anywhere — fall back to a top-level file so
-            # the title still appears in the catalog rather than
-            # vanishing from it with no explanation.
-            chosen = candidates[0] if candidates else None
+        entry = _pick_pc_executable(game_dir, files)
     elif platform in {"PS1", "PS2"}:
-        cue = next((f for f in candidates if f.suffix.lower() == ".cue"), None)
-        chosen = cue or (candidates[0] if candidates else None)
+        entry = next((f for f in candidates if f.suffix.lower() == ".cue"), None)
     else:
-        chosen = candidates[0] if candidates else None
+        entry = None
 
-    if chosen is None:
+    if entry is None:
+        # Nothing recognisable to lead with — prefer a top-level file,
+        # then anything at all, so a title with an unusual layout still
+        # appears in the catalog rather than vanishing from it.
+        entry = candidates[0] if candidates else (files[0] if files else None)
+    if entry is None:
         return []
 
-    # Size is the whole folder, not just `chosen`. For a .cue the actual
-    # disc data sits in the sibling .bin(s); for a PC game the .exe is a
-    # rounding error next to the tree around it. `chosen` is only what
-    # gets handed to the emulator, never the measure of the title.
-    #
-    # filename is relative to the game folder, so it carries the
-    # subdirectory when there is one ("bin/game.exe"). The /download and
-    # /media routes accept that shape; see server.py.
-    return [
-        GameFile(
-            filename=chosen.relative_to(game_dir).as_posix(),
-            format=chosen.suffix.lower().lstrip("."),
-            needs_conversion=False,
-            size_bytes=_folder_size(files),
-        )
-    ]
+    ordered = [entry] + [f for f in files if f != entry]
+    return [_game_file(game_dir, f) for f in ordered]

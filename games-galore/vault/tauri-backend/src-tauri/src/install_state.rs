@@ -76,12 +76,37 @@ fn save_states(app: &AppHandle, states: &InstallMap) -> Result<(), String> {
 
 /// Persists the new status and pushes it to the frontend in one step,
 /// so the UI never has to poll — it just listens for "install:status".
+///
+/// Reserved for the transitions actually worth recording: an install
+/// starting, finishing, failing, or being cleared. Progress within an
+/// install goes through emit_progress instead; see there for why.
 fn set_status(app: &AppHandle, id: &str, status: InstallStatus) -> Result<(), String> {
     let mut states = load_states(app);
     states.insert(id.to_string(), status.clone());
     save_states(app, &states)?;
     app.emit("install:status", (id, &status))
         .map_err(|e| e.to_string())
+}
+
+/// Pushes a progress update to the frontend without touching the state
+/// file. Persisting every tick meant a read-modify-write of the whole
+/// installs.json per percent per file — tolerable when a title was one
+/// file, but a PC game is a tree of thousands, which would have turned
+/// a single install into hundreds of thousands of rewrites of a file
+/// that grows with the size of the library.
+///
+/// Nothing is lost by not persisting: the only durable fact worth
+/// keeping mid-install is *that* one is in progress, which the
+/// persisted Downloading status at the start of install_game already
+/// records. An app closed mid-download still reads as "downloading" on
+/// next launch, with no live task behind it, and cancel_install
+/// already exists to clear exactly that.
+///
+/// Best-effort by design — a dropped progress frame is not a reason to
+/// fail an install that is otherwise proceeding.
+fn emit_progress(app: &AppHandle, id: &str, file: &str, pct: u8) {
+    let status = InstallStatus::Downloading { file: file.to_string(), pct };
+    let _ = app.emit("install:status", (id, &status));
 }
 
 #[tauri::command]
@@ -116,6 +141,23 @@ pub async fn install_game(
     let dest_dir = Path::new(&install_root).join(&game.platform).join(&game.title);
     fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
 
+    // Progress is reported against the whole title, not the file being
+    // transferred at the moment. A PC game is a tree of many files of
+    // wildly different sizes, so a per-file percentage would race to
+    // 100% and reset over and over while telling you nothing about how
+    // far along the install actually is.
+    let total_bytes: u64 = game.files.iter().map(|f| f.size_bytes).sum();
+    let mut progress = Progress { done_bytes: 0, total_bytes, last_pct: -1 };
+
+    // Persisted once, so an install interrupted by the app closing is
+    // still recognisable as one on next launch. Everything after this
+    // is emitted without touching the state file; see emit_progress.
+    set_status(
+        &app,
+        &game.id,
+        InstallStatus::Downloading { file: game.files[0].filename.clone(), pct: 0 },
+    )?;
+
     for file in &game.files {
         // Checked between files too, not just inside each file's own
         // streaming loop — a game with several small files could
@@ -125,7 +167,7 @@ pub async fn install_game(
             return Ok(()); // cancel_install already reset status and cleaned up
         }
 
-        match download_file(&app, &game.id, &server_base, file, &dest_dir).await {
+        match download_file(&app, &game.id, &server_base, file, &dest_dir, &mut progress).await {
             Ok(true) => return Ok(()), // cancelled mid-file; same as above
             Ok(false) => {}            // this file finished; move to the next
             Err(e) => {
@@ -139,6 +181,28 @@ pub async fn install_game(
     Ok(())
 }
 
+/// Running totals for one install, carried across all of its files.
+struct Progress {
+    done_bytes: u64,
+    total_bytes: u64,
+    /// Last percentage actually emitted, so a large file doesn't emit
+    /// thousands of identical frames. -1 guarantees the first one does.
+    last_pct: i16,
+}
+
+impl Progress {
+    /// The catalog's sizes are what the files occupy in the source
+    /// library, and a .nsz decompresses on the way out, so the bytes
+    /// arriving can exceed the total that was advertised. Clamped
+    /// rather than left to overshoot into a nonsensical percentage.
+    fn pct(&self) -> u8 {
+        if self.total_bytes == 0 {
+            return 0;
+        }
+        ((self.done_bytes * 100) / self.total_bytes).min(100) as u8
+    }
+}
+
 /// Returns Ok(true) if cancelled partway through, Ok(false) if the file
 /// completed normally. Cancellation isn't treated as an error — it's a
 /// deliberate, successful stop, and the caller shouldn't report it as
@@ -149,6 +213,7 @@ async fn download_file(
     server_base: &str,
     file: &GameFile,
     dest_dir: &Path,
+    progress: &mut Progress,
 ) -> Result<bool, String> {
     // The filename is encoded per-segment for the same reason the id is:
     // it can carry subdirectories of its own ("bin/game.exe") when a PC
@@ -172,8 +237,6 @@ async fn download_file(
             extract_error_detail(&body)
         ));
     }
-    let total = response.content_length().unwrap_or(0);
-
     let dest_filename = if file.format == "nsz" {
         file.filename.replace(".nsz", ".nsp")
     } else {
@@ -189,9 +252,12 @@ async fn download_file(
     }
     let mut out = fs::File::create(&dest_path).await.map_err(|e| e.to_string())?;
 
+    // Emitted once per file regardless of whether the overall
+    // percentage moved, so the name on screen keeps up while a long
+    // tail of small files goes by.
+    emit_progress(app, game_id, &file.filename, progress.pct());
+
     let mut stream = response.bytes_stream();
-    let mut downloaded: u64 = 0;
-    let mut last_reported: i16 = -1; // guarantees the first chunk always emits
 
     while let Some(chunk) = stream.next().await {
         if cancelled_downloads().lock().unwrap().remove(game_id) {
@@ -200,18 +266,20 @@ async fn download_file(
 
         let chunk = chunk.map_err(|e| e.to_string())?;
         out.write_all(&chunk).await.map_err(|e| e.to_string())?;
-        downloaded += chunk.len() as u64;
+        progress.done_bytes += chunk.len() as u64;
 
-        let pct = if total > 0 { ((downloaded * 100) / total) as i16 } else { 0 };
-        if pct != last_reported {
-            last_reported = pct;
-            set_status(
-                app,
-                game_id,
-                InstallStatus::Downloading { file: file.filename.clone(), pct: pct as u8 },
-            )?;
+        let pct = progress.pct() as i16;
+        if pct != progress.last_pct {
+            progress.last_pct = pct;
+            emit_progress(app, game_id, &file.filename, pct as u8);
         }
     }
+
+    // Flushed explicitly rather than at drop, where an error would be
+    // silently swallowed — a truncated file that reports success is
+    // exactly the kind of install failure that surfaces much later as
+    // an emulator crash.
+    out.flush().await.map_err(|e| e.to_string())?;
 
     Ok(false)
 }
@@ -251,6 +319,67 @@ pub fn cancel_install(
     }
 
     set_status(&app, &game_id, InstallStatus::NotInstalled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn progress(done: u64, total: u64) -> Progress {
+        Progress { done_bytes: done, total_bytes: total, last_pct: -1 }
+    }
+
+    #[test]
+    fn percentage_runs_across_the_whole_title() {
+        // Three files of 100 bytes each: finishing the first is a third
+        // of the install, not 100% of it.
+        assert_eq!(progress(100, 300).pct(), 33);
+        assert_eq!(progress(300, 300).pct(), 100);
+    }
+
+    #[test]
+    fn percentage_clamps_when_nsz_decompresses_past_its_listed_size() {
+        assert_eq!(progress(250, 100).pct(), 100);
+    }
+
+    #[test]
+    fn percentage_of_an_empty_total_is_zero_not_a_panic() {
+        assert_eq!(progress(0, 0).pct(), 0);
+    }
+
+    #[test]
+    fn percentage_does_not_overflow_on_a_large_title() {
+        // done * 100 overflows a u32 well before this; u64 is required.
+        let p = progress(80 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
+        assert_eq!(p.pct(), 80);
+    }
+
+    #[test]
+    fn path_segments_are_encoded_without_losing_separators() {
+        assert_eq!(encode_path_segments("Switch/198X"), "Switch/198X");
+        assert_eq!(encode_path_segments("PC/Moth & Ember"), "PC/Moth%20%26%20Ember");
+        // A nested filename has to survive the same way, or the
+        // server's route can't split it back apart.
+        assert_eq!(encode_path_segments("bin/game data/run.exe"), "bin/game%20data/run.exe");
+    }
+
+    #[test]
+    fn error_detail_is_pulled_out_of_flasks_html_error_page() {
+        let body = "<html><title>500</title><body><h1>Error</h1>\
+                    <p>nsz conversion failed: bad header</p></body></html>";
+        assert_eq!(extract_error_detail(body), "nsz conversion failed: bad header");
+        assert_eq!(extract_error_detail("   "), "no error detail returned");
+    }
+
+    #[test]
+    fn install_dir_is_reconstructed_from_the_game_id() {
+        assert_eq!(
+            install_dir_for("/games", "PC/Moth & Ember"),
+            Some(PathBuf::from("/games/PC/Moth & Ember"))
+        );
+        // No platform separator means no directory can be derived.
+        assert_eq!(install_dir_for("/games", "bare-id"), None);
+    }
 }
 
 /// game_id ("Switch/198X") has a real path separator in it that must

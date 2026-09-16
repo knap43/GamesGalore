@@ -21,12 +21,32 @@ client never has to know which.
 
 ### Installing is just downloading
 
-The server resolves any `.nsz` → `.nsp` conversion before a file is ever sent
-over the wire, so `install_game` has no Switch-specific path at all: it
-downloads every file in `game.files` the same way regardless of platform,
-streaming each to disk and reporting progress as it goes. If the requested file
-was `.nsz`, what arrives is already a `.nsp`; the client renames it accordingly
-and never invokes anything.
+The catalog lists every file a title needs — the whole tree for a PC game, both
+halves of a `.bin`/`.cue` pair, each of a Switch title's `.nsp`/`.nsz` files —
+so `install_game` downloads all of them, streaming each to disk under the same
+relative path it has in the library. Parent directories are created as it goes,
+since a filename can carry subdirectories of its own.
+
+There is no Switch-specific path at all: the server resolves any `.nsz` → `.nsp`
+conversion before a file is sent, so what arrives is always installable as-is.
+The client renames a converted file accordingly and never invokes anything.
+
+Progress is reported against the whole title rather than the file currently in
+flight — a per-file percentage would race to 100% and reset for every one of a
+PC game's thousands of files while saying nothing about how far along the
+install actually is. Because a `.nsz` decompresses on the way out, the bytes
+arriving can exceed the total the catalog advertised, so the percentage is
+clamped rather than allowed to overshoot.
+
+Only transitions are written to `installs.json` — an install starting,
+finishing, failing or being cleared. Progress is emitted to the frontend
+without touching it. Persisting each tick would have meant a read-modify-write
+of the entire state file per percent per file, which is survivable for a
+one-file title and hundreds of thousands of rewrites for a tree. The one
+durable fact worth keeping mid-install is that one is in progress, and the
+`Downloading` status persisted at the start records exactly that — which is
+also what lets `cancel_install` recognise and clear an install orphaned by the
+app closing mid-download.
 
 ### Choosing what to launch
 
@@ -292,16 +312,13 @@ you've confirmed that's the only dialog capability in use.
 
 ## Known gaps
 
-- **Multi-file titles install as an unusable stub.** The server's catalog lists
-  one entry-point file per PS1/PS2 and PC title — the `.cue` or the `.exe` —
-  and `/download` 404s anything else, so the `.bin` holding a disc's data, or
-  the tree a PC game needs, never arrives. Launching such a title fails at the
-  emulator. The reported size is right; the transfer isn't. Fixing it means
-  having `library.py` return every file in the folder, which this side is
-  already prepared for: nested paths round-trip through the download route and
-  `install_game` creates parent directories as it writes.
-- **Aggregate install progress.** Progress is per-file percentage, not overall
-  bytes across all of a title's files.
+- **One HTTP request per file.** A large PC game is thousands of files and
+  therefore thousands of requests. Correct, and fine on a LAN, but an archive
+  endpoint that streamed a whole title in one response would be considerably
+  faster if this turns out to drag.
+- **No resume.** An install interrupted partway starts over from the first
+  file; already-complete files are downloaded again. The server supports range
+  requests, so the pieces for resuming are there, but nothing uses them yet.
 - **Playtime tracking.** Deliberately deferred, not an oversight. The "Recently
   played" and "Playtime" sort options work for mock/browser-preview games but do
   nothing for real ones, since no `hours`/`lastPlayedDaysAgo` field exists for
@@ -322,11 +339,18 @@ toolchain too old for the dependency graph's current requirements, which is what
 the `rustup` note above is about; that is no longer a live problem on a current
 toolchain.
 
-`cargo test` covers `launcher.rs`'s file resolution against real temporary
-directories — the PC executable search across subdirectories, its exclusion of
-installers, the PS1/PS2 `.cue` rule, stability of the Switch pick, and argument
-quoting. Run both from `src-tauri/`. Note that `cargo check` needs the system
-webview headers listed under prerequisites even though it never links a GUI.
+`cargo test` covers, against real temporary directories where files are
+involved: `launcher.rs`'s file resolution — the PC executable search across
+subdirectories, its exclusion of installers, the PS1/PS2 `.cue` rule, stability
+of the Switch pick, argument quoting — and `install_state.rs`'s progress
+arithmetic, path-segment encoding, and error-detail extraction. Run both from
+`src-tauri/`. Note that `cargo check` needs the system webview headers listed
+under prerequisites even though it never links a GUI.
+
+The server side's scanning and routes are covered separately by fixture tests
+that build real game folders, including a simulated install that fetches every
+file the catalog lists and checks the reconstructed tree byte-for-byte against
+the source.
 
 The frontend has been exercised harder: the full mock-mode flow (load → open a
 game → install → uninstall → back → open settings → toggle sound → close) plus
