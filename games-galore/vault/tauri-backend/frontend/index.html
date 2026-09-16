@@ -1025,18 +1025,12 @@
  * ---------------------------------------------------------------
  * DATA LAYER
  * ---------------------------------------------------------------
- * In an Electron build, GAMES would not be a literal array — this
- * function would become an async call bridged through a preload
- * script, e.g.:
- *
- *   async function loadGames() {
- *     return await window.api.invoke('library:get-games');
- *   }
- *
- * ...where 'library:get-games' is an ipcMain handler in the main
- * process querying SQLite. Everything below (render, filter, sort)
- * is written against the shape of this array, so that swap is the
- * only thing that would need to change.
+ * GAMES is populated at startup by loadGames() — from the Python
+ * library server via the Rust `fetch_library` command when running
+ * inside Tauri, or from MOCK_GAMES when this file is opened directly
+ * in a browser. Everything below (render, filter, sort) is written
+ * against the shape of that array alone, so neither path needs any
+ * special handling further down.
  * ---------------------------------------------------------------
  */
 

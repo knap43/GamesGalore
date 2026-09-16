@@ -81,7 +81,7 @@ pub fn launch_game(app: AppHandle, install_dir: String, platform: String) -> Res
     eprintln!("launch_game: {} {}", emu.command, shell_quote(&args));
 
     // Detached: the emulator's lifetime isn't tied to this app, so
-    // closing Vault doesn't take a running game down with it.
+    // closing Games Galore doesn't take a running game down with it.
     Command::new(&emu.command)
         .args(&args)
         .spawn()

@@ -4,15 +4,33 @@ This folder is a self-contained, standalone build of the frontend, meant to be
 hosted directly via GitHub Pages so people can click around the UI without
 installing anything.
 
-It's the exact same `index.html` as the real app — nothing was forked or
-reimplemented separately. The app already had a browser-preview fallback path
-built in (`const TAURI = window.__TAURI__ || null`), originally just for
-testing the UI without the Tauri backend running. Opening this file directly
-in a browser means that object is never defined, so every Tauri-specific call
-throughout the app automatically takes its "preview mode" branch instead:
-mock game data, a simulated install progress sequence, and a message
-explaining that launching is disabled, rather than actually downloading files
-or spawning emulators.
+## Its relationship to the real frontend
+
+It started as a byte-identical copy of the app's own
+`games-galore/vault/tauri-backend/frontend/index.html` and is still
+substantially that file, so the UI, layout and navigation you see here are the
+real ones rather than a reimplementation. It is no longer identical, though:
+this copy carries a small set of demo-only changes, and the two files have to be
+re-synced by hand whenever the app's frontend changes.
+
+What this copy adds on top of the app's version:
+
+- A banner across the top saying plainly that installs and playtime are
+  simulated.
+- `simulateDemoInstall()`, which plays out a realistic multi-file progress
+  sequence. The app's own preview fallback just flips the game to "installed"
+  instantly, which would skip straight past the progress bar and cancel button —
+  both real, deliberate parts of the UI worth actually showing off here.
+- A brief "Would launch via your emulator ↗" message on the Play button. The
+  app's version silently no-ops outside Tauri, which reads as a broken button to
+  a visitor who has no reason to expect otherwise.
+
+Everything else about the dual-mode behaviour comes from the app itself, not
+from this copy. The frontend already guards every Tauri call behind
+`const TAURI = window.__TAURI__ || null`, originally so the UI could be iterated
+on in a browser tab without a Tauri build. Opening this file directly means that
+object is never defined, so each of those calls takes its preview branch and
+falls back to the mock catalog.
 
 ## Enabling it
 

@@ -1,0 +1,22 @@
+# Rust / Tauri
+target/
+**/*.rs.bk
+*.pdb
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local runtime state (written into the app data dir, never the repo,
+# but easy to end up with a stray copy while testing by hand)
+installs.json
+settings.json
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
