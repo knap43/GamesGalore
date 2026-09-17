@@ -182,6 +182,35 @@ Yuzu-derived emulators use, including Flatpak paths. A directory only counts if
 it actually contains the save tree. Settings shows one line reporting how many
 titles are identified, rather than a row per game.
 
+**Symlinks are never followed, anywhere in the save path.** This is not a
+hardening detail, it's load-bearing. A Wine prefix's Windows user profile is not
+self-contained: Wine points Documents, Desktop, Downloads and the rest at the
+real home directory. Following those turns "measure this game's save" into "walk
+the user's entire home directory" — and because prefixes live under that home
+directory by default, the graph contains a cycle and the walk never terminates.
+That is what it did: `save_status` hung forever, so its promise never resolved,
+the Play button did nothing at all, and a thread span at 100% for as long as the
+app stayed open.
+
+Refusing to follow them is also simply the right answer. What a prefix points
+*out* at is the user's own files, which are not this game's save data; what it
+*contains* — `AppData` above all — is. The install-directory scan in
+`launcher.rs` refuses them for the same reason, and both walks carry a depth cap
+as a second line of defence.
+
+**The consequence, stated plainly:** a PC game that saves into `My Documents`
+rather than `AppData` writes *outside* its prefix, through one of those
+symlinks, and is therefore not captured. Wine can be configured to make those
+profile folders real directories inside the prefix — `winecfg` → Desktop
+Integration, or deleting the symlink and creating a directory in its place —
+which brings such a game's saves back inside and into sync.
+
+**Nothing heavy runs on the async runtime.** Walking a save tree and gzipping it
+are handed to `spawn_blocking`. "Fast" is a property of the disk rather than of
+this code, and a command that blocks a runtime worker stalls every other command
+alongside it — which is how one slow walk became an app-wide freeze rather than
+one slow button.
+
 **Archives are positional.** Entries are stored relative to a root that
 restoring puts them back under — `nand/user/save/<...>/<title id>/...` rather
 than an absolute path — so an archive made on one machine lands correctly on

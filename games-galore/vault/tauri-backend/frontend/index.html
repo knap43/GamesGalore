@@ -1722,6 +1722,12 @@ async function syncBeforeLaunch(game) {
   // guards against would land outside the try above, so it escaped
   // syncBeforeLaunch entirely and stopped the game opening at all —
   // the worst possible failure mode for a convenience feature.
+  // The backend may have worked out a Title ID from the game's files
+  // just now. Recording it here is what stops this machine treating
+  // the game as unidentified and repeating the session-watching work —
+  // an extra directory scan before and after every single launch.
+  if (status && status.title_id) state.saveSync.title_ids[game.id] = status.title_id;
+
   if (!status || status.unavailable) return true; // not configured for this game yet
 
   if (status.state === 'remote_only' || status.state === 'remote_newer') {

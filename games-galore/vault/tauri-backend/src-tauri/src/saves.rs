@@ -76,6 +76,11 @@ pub struct SaveStatus {
     /// the UI shows this instead of a sync control, since there is
     /// nothing actionable until it's resolved.
     pub unavailable: Option<String>,
+    /// The Title ID this resolved to, for Switch. Reported back so the
+    /// frontend learns what the backend worked out — otherwise it keeps
+    /// believing a game is unidentified and redoes the session-watching
+    /// work on every single launch.
+    pub title_id: Option<String>,
 }
 
 /// Where a game's saves live, and the root that paths inside the
@@ -90,6 +95,9 @@ pub struct SaveStatus {
 struct SaveSource {
     root: PathBuf,
     subpaths: Vec<PathBuf>,
+    /// Set for Switch, where resolving the source means resolving a
+    /// Title ID; None for PC, which needs no such mapping.
+    title_id: Option<String>,
 }
 
 fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSource, String> {
@@ -125,7 +133,7 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
             if subpaths.is_empty() {
                 return Err(format!("no save directory found for Title ID {title_id}"));
             }
-            Ok(SaveSource { root, subpaths })
+            Ok(SaveSource { root, subpaths, title_id: Some(title_id) })
         }
         "PC" => {
             let prefix = crate::launcher::prefix_dir(&settings, platform, game_id)
@@ -137,7 +145,7 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
             if !prefix.join(&users).is_dir() {
                 return Err("this game's Wine prefix has no user directory yet — run it once".into());
             }
-            Ok(SaveSource { root: prefix, subpaths: vec![users] })
+            Ok(SaveSource { root: prefix, subpaths: vec![users], title_id: None })
         }
         _ => Err(format!("cloud saves aren't supported for {platform}")),
     }
@@ -441,26 +449,64 @@ fn collect_hex16_dirs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// How deep any save walk will go. Save data is a handful of levels at
+/// most; this is a backstop against a pathological tree rather than a
+/// real constraint.
+const MAX_SAVE_DEPTH: usize = 24;
+
+/// Walks a save directory, visiting real files only.
+///
+/// **Symlinks are never followed, and this is the whole point.** A Wine
+/// prefix's Windows user profile is not a self-contained directory: Wine
+/// points Documents, Desktop, Downloads and the rest at the real home
+/// directory. Following those turns "measure this game's save" into
+/// "walk the user's entire home directory" — and when the prefix itself
+/// lives under that home directory, as it does by default, the graph
+/// contains a cycle and the walk never terminates at all. That is not a
+/// hypothetical: it hung `save_status` forever, so its promise never
+/// resolved and the Play button did nothing, while a thread span at
+/// 100% for as long as the app stayed open.
+///
+/// Refusing to follow them is also the correct answer rather than
+/// merely the safe one. What a prefix points *out* at is the user's own
+/// files, which are not this game's save data. What a prefix *contains*
+/// — AppData above all — is.
+fn walk_save_files(root: &Path, mut visit: impl FnMut(&Path, &fs::Metadata)) {
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((path, depth)) = stack.pop() {
+        // symlink_metadata, not metadata: the latter resolves the link
+        // and reports on its target, which is exactly what must not
+        // happen here.
+        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            if depth < MAX_SAVE_DEPTH {
+                if let Ok(entries) = fs::read_dir(&path) {
+                    stack.extend(entries.flatten().map(|e| (e.path(), depth + 1)));
+                }
+            }
+            continue;
+        }
+        if meta.is_file() {
+            visit(&path, &meta);
+        }
+    }
+}
+
 fn newest_mtime(root: &Path, subpaths: &[PathBuf]) -> (u64, u64) {
     let mut newest = 0u64;
     let mut bytes = 0u64;
     for sub in subpaths {
-        let mut stack = vec![root.join(sub)];
-        while let Some(path) = stack.pop() {
-            let Ok(meta) = fs::metadata(&path) else { continue };
-            if meta.is_dir() {
-                if let Ok(entries) = fs::read_dir(&path) {
-                    stack.extend(entries.flatten().map(|e| e.path()));
-                }
-                continue;
-            }
+        walk_save_files(&root.join(sub), |_, meta| {
             bytes += meta.len();
             if let Ok(modified) = meta.modified() {
                 if let Ok(since) = modified.duration_since(UNIX_EPOCH) {
                     newest = newest.max(since.as_secs());
                 }
             }
-        }
+        });
     }
     (newest, bytes)
 }
@@ -502,14 +548,30 @@ pub async fn save_status(
         local_bytes: 0,
         latest: None,
         unavailable: Some(why),
+        title_id: None,
     };
 
-    let source = match save_sources(&app, &game_id, &platform) {
-        Ok(s) => s,
+    // Filesystem work goes to a blocking thread rather than running on
+    // the async runtime. Walking a save tree is fast, but "fast" is a
+    // property of the disk, not of this code — and a command that
+    // blocks a runtime worker stalls every other command with it,
+    // which is how a slow walk turned into a Play button that did
+    // nothing at all.
+    let resolved = {
+        let app = app.clone();
+        let game_id = game_id.clone();
+        let platform = platform.clone();
+        tokio::task::spawn_blocking(move || {
+            save_sources(&app, &game_id, &platform)
+                .map(|s| (newest_mtime(&s.root, &s.subpaths), s.title_id))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("save lookup failed: {e}")))
+    };
+    let ((local_modified, local_bytes), title_id) = match resolved {
+        Ok(v) => v,
         Err(e) => return unavailable(e),
     };
-
-    let (local_modified, local_bytes) = newest_mtime(&source.root, &source.subpaths);
     let latest = fetch_versions(&server_base, &game_id)
         .await
         .unwrap_or_default()
@@ -537,7 +599,7 @@ pub async fn save_status(
         }
     };
 
-    SaveStatus { state, local_modified, local_bytes, latest, unavailable: None }
+    SaveStatus { state, local_modified, local_bytes, latest, unavailable: None, title_id }
 }
 
 #[tauri::command]
@@ -547,14 +609,27 @@ pub async fn upload_save(
     platform: String,
     server_base: String,
 ) -> Result<SaveVersion, String> {
-    let source = save_sources(&app, &game_id, &platform)?;
-    let (local_modified, local_bytes) = newest_mtime(&source.root, &source.subpaths);
-    if local_bytes == 0 {
-        return Err("there is no save data here to upload".into());
-    }
+    let device = get_settings(app.clone()).save_sync.device_name;
 
-    let archive = build_archive(&source)?;
-    let device = get_settings(app).save_sync.device_name;
+    // Both the walk and the gzip happen off the runtime: compressing a
+    // save is real CPU work, and doing it on a runtime worker would
+    // freeze every other command for its duration.
+    let prepared = {
+        let app = app.clone();
+        let game_id = game_id.clone();
+        let platform = platform.clone();
+        tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, u64), String> {
+            let source = save_sources(&app, &game_id, &platform)?;
+            let (local_modified, local_bytes) = newest_mtime(&source.root, &source.subpaths);
+            if local_bytes == 0 {
+                return Err("there is no save data here to upload".into());
+            }
+            Ok((build_archive(&source)?, local_modified))
+        })
+        .await
+        .map_err(|e| format!("preparing the save failed: {e}"))?
+    };
+    let (archive, local_modified) = prepared?;
 
     let url = format!(
         "{}?device={}&saved_at={}",
@@ -609,20 +684,39 @@ pub async fn download_save(
     }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
 
-    back_up_existing(&source)?;
-    extract_archive(&bytes, &source.root)
+    tokio::task::spawn_blocking(move || {
+        back_up_existing(&source)?;
+        extract_archive(&bytes, &source.root)
+    })
+    .await
+    .map_err(|e| format!("restoring the save failed: {e}"))?
 }
 
 fn build_archive(source: &SaveSource) -> Result<Vec<u8>, String> {
     let mut builder = tar::Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+    // Off by default in this crate's append_dir_all, which would
+    // otherwise archive whatever a Wine profile links out to — the
+    // user's documents, and then the cycle back into the prefix. Files
+    // are added individually below for the same reason.
+    builder.follow_symlinks(false);
     for sub in &source.subpaths {
         let full = source.root.join(sub);
         if !full.is_dir() {
             continue;
         }
-        builder
-            .append_dir_all(sub, &full)
-            .map_err(|e| format!("archiving {}: {e}", full.display()))?;
+        let mut failure: Option<String> = None;
+        walk_save_files(&full, |path, _| {
+            if failure.is_some() {
+                return;
+            }
+            let Ok(relative) = path.strip_prefix(&source.root) else { return };
+            if let Err(e) = builder.append_path_with_name(path, relative) {
+                failure = Some(format!("archiving {}: {e}", path.display()));
+            }
+        });
+        if let Some(e) = failure {
+            return Err(e);
+        }
     }
     builder
         .into_inner()
@@ -773,7 +867,7 @@ mod tests {
     fn an_archive_round_trips_into_a_different_root() {
         let data = switch_fixture("0100AAA000BBB000");
         let subpaths = find_switch_save_dirs(&data, "0100AAA000BBB000");
-        let source = SaveSource { root: data.clone(), subpaths: subpaths.clone() };
+        let source = SaveSource { root: data.clone(), subpaths: subpaths.clone(), title_id: None };
 
         let archive = build_archive(&source).unwrap();
 
@@ -833,7 +927,7 @@ mod tests {
     fn restoring_moves_the_existing_save_aside_rather_than_deleting_it() {
         let data = switch_fixture("0100AAA000BBB000");
         let subpaths = find_switch_save_dirs(&data, "0100AAA000BBB000");
-        let source = SaveSource { root: data.clone(), subpaths: subpaths.clone() };
+        let source = SaveSource { root: data.clone(), subpaths: subpaths.clone(), title_id: None };
 
         back_up_existing(&source).unwrap();
 
@@ -975,6 +1069,82 @@ mod tests {
         // No panic, no vast allocation, just no answer.
         assert_eq!(detect_switch_title_id(dir.to_string_lossy().to_string()), None);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A Wine prefix as Wine actually builds one: the Windows user
+    /// profile's Documents/Desktop/etc. are symlinks out to the real
+    /// home directory, not directories inside the prefix.
+    fn wine_prefix_fixture() -> (PathBuf, PathBuf) {
+        let base = scratch("wine");
+        let home = base.join("home");
+        let prefix = base.join("Games/.wine-prefixes/ULTRAKILL");
+        let users = prefix.join("drive_c/users/you");
+
+        // Real save data, inside the prefix.
+        write(&users.join("AppData/Roaming/ULTRAKILL/save.dat"), "progress");
+
+        // A big tree outside it, standing in for a home directory.
+        for i in 0..40 {
+            write(&home.join(format!("Documents/thesis/chapter{i}.txt")), "lots of words");
+        }
+        // ...which the prefix links out to, exactly as Wine does.
+        std::os::unix::fs::symlink(home.join("Documents"), users.join("Documents")).unwrap();
+        std::os::unix::fs::symlink(&home, users.join("Desktop")).unwrap();
+
+        // And the loop that makes this unbounded rather than merely
+        // slow: the prefix lives under the home directory the profile
+        // links back to.
+        std::os::unix::fs::symlink(&base, home.join("everything")).unwrap();
+
+        (prefix, base)
+    }
+
+    #[test]
+    fn a_wine_prefix_walk_stays_inside_the_prefix() {
+        let (prefix, base) = wine_prefix_fixture();
+        let source = SaveSource {
+            root: prefix.clone(),
+            subpaths: vec![PathBuf::from("drive_c/users")],
+            title_id: None,
+        };
+
+        // Run it with a deadline. Before symlinks were excluded this
+        // never returned at all: the profile links out to the home
+        // directory, which links back to the prefix.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(newest_mtime(&source.root, &source.subpaths));
+        });
+        let (_, bytes) = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("walk did not terminate — it followed a symlink loop");
+
+        // Only the real save inside the prefix, not the 40 files the
+        // profile links out to.
+        assert_eq!(bytes, "progress".len() as u64);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_archive_of_a_prefix_excludes_what_it_links_out_to() {
+        let (prefix, base) = wine_prefix_fixture();
+        let source = SaveSource {
+            root: prefix.clone(),
+            subpaths: vec![PathBuf::from("drive_c/users")],
+            title_id: None,
+        };
+
+        let archive = build_archive(&source).expect("archiving should terminate");
+        let restored = scratch("restored");
+        extract_archive(&archive, &restored).unwrap();
+
+        assert!(restored.join("drive_c/users/you/AppData/Roaming/ULTRAKILL/save.dat").is_file());
+        // The user's documents are not this game's save data and must
+        // never have been swept into it.
+        assert!(!restored.join("drive_c/users/you/Documents/thesis/chapter0.txt").exists());
+
+        fs::remove_dir_all(&base).unwrap();
+        fs::remove_dir_all(&restored).unwrap();
     }
 
     #[test]
