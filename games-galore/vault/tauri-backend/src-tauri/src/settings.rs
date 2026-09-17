@@ -53,6 +53,57 @@ pub struct Settings {
     /// discarded and replaced with defaults.
     #[serde(default)]
     pub launch_overrides: HashMap<String, String>,
+    /// Where each PC title's own Wine prefix lives. Empty means "a
+    /// `.wine-prefixes` directory beside the install root", which is
+    /// what makes this work with no configuration at all.
+    #[serde(default)]
+    pub prefix_root: String,
+    #[serde(default)]
+    pub save_sync: SaveSyncConfig,
+}
+
+/// Everything cloud saves need that can't be derived.
+///
+/// `switch_data_dir` is the emulator's own data directory — saves live
+/// under it in a fixed tree, so one path covers every Switch title.
+/// `title_ids` maps a `Game.id` to the 16-hex-digit Title ID the
+/// emulator files that game's saves under, which is the one thing with
+/// no relationship to the library's folder names and so the one thing
+/// that has to be recorded per game.
+///
+/// `device_name` only labels uploads in the version history, so you can
+/// tell which machine a save came from when deciding between two.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SaveSyncConfig {
+    pub enabled: bool,
+    pub device_name: String,
+    pub switch_data_dir: String,
+    #[serde(default)]
+    pub title_ids: HashMap<String, String>,
+}
+
+impl Default for SaveSyncConfig {
+    fn default() -> Self {
+        Self {
+            // Off until someone points it at an emulator directory:
+            // syncing save data is not something to start doing to
+            // people's playthroughs on their behalf.
+            enabled: false,
+            device_name: default_device_name(),
+            switch_data_dir: String::new(),
+            title_ids: HashMap::new(),
+        }
+    }
+}
+
+/// The machine's hostname where one is available, since the whole point
+/// is telling two machines apart in a version list.
+fn default_device_name() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "this machine".to_string())
 }
 
 /// Best-known defaults — native binary names and the version flags
@@ -99,6 +150,8 @@ impl Default for Settings {
             sound_enabled: true,
             emulators: default_emulators(),
             launch_overrides: HashMap::new(),
+            prefix_root: String::new(),
+            save_sync: SaveSyncConfig::default(),
         }
     }
 }

@@ -13,7 +13,8 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `install_state.rs` | The local record of what's on this machine (`installs.json` in the app data dir, keyed by `Game.id`), plus `install_game`, `uninstall_game` and `cancel_install`. |
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
-| `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, and any per-game launch overrides. |
+| `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
+| `saves.rs` | Locates a game's save data, packs it as a tar.gz and syncs it with the server. See **Cloud saves** below. |
 
 `Game.files` is a list because Switch titles can have several — base game,
 update, DLC — each independently already-`.nsp` or needing conversion. The
@@ -100,6 +101,67 @@ it through `resolve_chosen`, which refuses absolute paths, any `..` component,
 and — after canonicalising, so a symlink can't stand in for one — anything
 landing outside the install directory. This is stricter than the download path
 deliberately: the value here becomes the program that gets spawned.
+
+### Per-game Wine prefixes
+
+Each PC title runs in its own Wine prefix rather than sharing the default
+`~/.wine`. Two things follow from that. Games stop inheriting each other's
+runtime installs and registry state, and — more usefully — a game's prefix
+*becomes* its save data, which is what makes cloud saves work for PC without a
+per-game manifest of where each game hides its saves.
+
+Prefixes default to `.wine-prefixes` beside the install root, so this needs no
+configuration; `prefix_root` in settings overrides the location. Wine creates a
+missing prefix itself on first run, which makes the first launch of a title slow
+and every one after it normal.
+
+**This changes where existing PC saves are.** A game played before this existed
+wrote into the shared `~/.wine`, and will not find those saves in its new
+prefix. Copy them across by hand if you need them.
+
+`launch_game` also now sets the working directory to the executable's own
+folder. Plenty of Windows games resolve their data — and write their saves —
+relative to the working directory, and inheriting the app's would scatter those
+files wherever Games Galore happened to be started from.
+
+### Cloud saves
+
+Save data is archived, pushed to the library server, and pulled back on another
+machine. It's off until switched on in Settings: syncing someone's saves is not
+something to start doing on their behalf.
+
+**Where saves are.** This is the whole difficulty, and it differs by platform.
+Switch saves live under the emulator's data directory in a fixed tree keyed by
+the title's 16-hex-digit Title ID, which has no relationship to the library's
+folder names — so that one mapping has to be recorded per game, and Settings
+lists the IDs that actually have save data rather than asking anyone to type
+hex from memory. PC needs no mapping at all, because the prefix's
+`drive_c/users` is the save data.
+
+**Archives are positional.** Entries are stored relative to a root that
+restoring puts them back under — `nand/user/save/<...>/<title id>/...` rather
+than an absolute path — so an archive made on one machine lands correctly on
+another whose emulator directory is somewhere else entirely.
+
+**When it syncs.** Before launch, if the server's save is newer, and after the
+game exits. Detecting the exit is why `launch_game` supervises the process it
+spawns; the game's lifetime is still not tied to the app, the thread only
+observes. For Wine the child is the wrong thing to wait on — `wine game.exe`
+often returns long before the game does — so it additionally waits on
+`wineserver -w` against that game's prefix, which is only meaningful *because*
+each game has its own.
+
+**Conflicts.** A save only on the server restores without asking, since there is
+nothing local to lose. A server save that is newer *than a local one* prompts,
+showing both timestamps and which machine the remote came from. If a restore
+fails, the launch is blocked rather than allowed to proceed — opening the game
+would overwrite the newer save with the older one, which is the exact outcome
+the feature exists to prevent. Restoring always moves the existing local save
+aside as a `.bak-<timestamp>` directory rather than deleting it.
+
+The server keeps the last ten versions per game and ignores a re-upload whose
+contents are identical, so quitting a game without playing doesn't push real
+history out.
 
 ### Encoded slashes in game ids
 
@@ -352,6 +414,15 @@ you've confirmed that's the only dialog capability in use.
 - **No resume.** An install interrupted partway starts over from the first
   file; already-complete files are downloaded again. The server supports range
   requests, so the pieces for resuming are there, but nothing uses them yet.
+- **PC saves are the prefix's user directory only.** A game that writes its
+  save next to its own executable puts it in the install directory instead,
+  which is not archived. Nothing detects that case.
+- **No auth on the save endpoints.** They are writable, unlike everything else
+  the server exposes, which raises the stakes on the server's blanket lack of
+  authentication considerably. Fine on a trusted LAN; do not expose it further.
+- **Sync-on-exit needs the app running.** If Games Galore is closed while a
+  game is still open, nothing observes the exit and that session's save is not
+  uploaded until the next time the game is launched and quit.
 - **Playtime tracking.** Deliberately deferred, not an oversight. The "Recently
   played" and "Playtime" sort options work for mock/browser-preview games but do
   nothing for real ones, since no `hours`/`lastPlayedDaysAgo` field exists for

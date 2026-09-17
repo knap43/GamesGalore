@@ -7,9 +7,9 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
-use crate::settings::get_settings;
+use crate::settings::{get_settings, Settings};
 
 /// The part of the launch command that's fixed per platform —
 /// fullscreen flags and where the game path goes — independent of
@@ -224,6 +224,59 @@ fn find_local_game_file(install_dir: &Path, platform: &str) -> Option<PathBuf> {
     entries.into_iter().next()
 }
 
+/// Where a game's own Wine prefix lives. Each PC title gets one rather
+/// than sharing the default `~/.wine`, for two reasons: it isolates
+/// games from each other's runtime installs and registry, and it makes
+/// the prefix's user directory *be* that game's save data — which is
+/// what lets cloud saves work for PC at all without a per-game manifest
+/// of where each game hides its saves.
+///
+/// Defaults to `.wine-prefixes` beside the install root, so this needs
+/// no configuration; `prefix_root` in settings overrides it.
+pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<PathBuf> {
+    if platform != "PC" {
+        return None;
+    }
+    let (_, title) = game_id.split_once('/')?;
+    let root = if settings.prefix_root.trim().is_empty() {
+        if settings.install_root.trim().is_empty() {
+            return None;
+        }
+        Path::new(&settings.install_root).join(".wine-prefixes")
+    } else {
+        PathBuf::from(&settings.prefix_root)
+    };
+    Some(root.join(title))
+}
+
+/// Waits for the session to actually finish, then tells the frontend.
+///
+/// The child is *not* killed or reaped in a way that ties its lifetime
+/// to this app — closing Games Galore still leaves a running game
+/// running. This only observes.
+///
+/// For Wine the child process is the wrong thing to wait on: `wine
+/// game.exe` frequently returns long before the game does, because the
+/// real process is owned by the prefix's wineserver. `wineserver -w`
+/// blocks until everything in that prefix has exited, which is the
+/// actual end of the session — and is only meaningful *because* each
+/// game has its own prefix, since on a shared prefix it would wait for
+/// every Wine game at once.
+fn supervise(app: AppHandle, mut child: std::process::Child, game_id: String, prefix: Option<PathBuf>) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        if let Some(prefix) = prefix {
+            let _ = Command::new("wineserver")
+                .arg("-w")
+                .env("WINEPREFIX", &prefix)
+                .status();
+        }
+        // Best-effort: a missing listener is not worth reporting, and
+        // there is nothing to retry against.
+        let _ = app.emit("game:exited", &game_id);
+    });
+}
+
 /// `executable` is a path relative to the install directory, as listed
 /// by list_launch_candidates — the UI's picker passes back whichever
 /// entry is selected. Left unset, the automatic choice is used, which
@@ -233,9 +286,10 @@ pub fn launch_game(
     app: AppHandle,
     install_dir: String,
     platform: String,
+    game_id: String,
     executable: Option<String>,
 ) -> Result<(), String> {
-    let settings = get_settings(app);
+    let settings = get_settings(app.clone());
     let emu = settings
         .emulators
         .get(&platform)
@@ -259,13 +313,36 @@ pub fn launch_game(
 
     eprintln!("launch_game: {} {}", emu.command, shell_quote(&args));
 
+    let mut command = Command::new(&emu.command);
+    command.args(&args);
+
+    // Plenty of Windows games resolve their data — and write their
+    // saves — relative to the working directory rather than to the
+    // executable's own location. Inheriting this app's working
+    // directory would scatter those files wherever Games Galore was
+    // started from, so the game's own folder is the only sane choice.
+    if let Some(parent) = file.parent() {
+        command.current_dir(parent);
+    }
+
+    let prefix = prefix_dir(&settings, &platform, &game_id);
+    if let Some(prefix) = &prefix {
+        // Wine creates a missing prefix itself on first run; this just
+        // makes sure the parent exists so it has somewhere to do that.
+        if let Some(parent) = prefix.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("creating {}: {e}", parent.display()))?;
+        }
+        command.env("WINEPREFIX", prefix);
+    }
+
     // Detached: the emulator's lifetime isn't tied to this app, so
     // closing Games Galore doesn't take a running game down with it.
-    Command::new(&emu.command)
-        .args(&args)
+    let child = command
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
 
+    supervise(app, child, game_id, prefix);
     Ok(())
 }
 
@@ -458,6 +535,51 @@ mod tests {
         // being handed to the emulator to fail on later.
         assert!(resolve_chosen(&dir, "nope.exe").is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn settings_with(install_root: &str, prefix_root: &str) -> Settings {
+        Settings {
+            install_root: install_root.to_string(),
+            prefix_root: prefix_root.to_string(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn each_pc_title_gets_its_own_prefix_beside_the_install_root() {
+        let settings = settings_with("/games", "");
+        assert_eq!(
+            prefix_dir(&settings, "PC", "PC/Hollow Meridian"),
+            Some(PathBuf::from("/games/.wine-prefixes/Hollow Meridian"))
+        );
+        // Two titles never share one, which is the whole point.
+        assert_ne!(
+            prefix_dir(&settings, "PC", "PC/Hollow Meridian"),
+            prefix_dir(&settings, "PC", "PC/Moth & Ember")
+        );
+    }
+
+    #[test]
+    fn an_explicit_prefix_root_overrides_the_default_location() {
+        let settings = settings_with("/games", "/mnt/ssd/prefixes");
+        assert_eq!(
+            prefix_dir(&settings, "PC", "PC/Hollow Meridian"),
+            Some(PathBuf::from("/mnt/ssd/prefixes/Hollow Meridian"))
+        );
+    }
+
+    #[test]
+    fn only_pc_titles_have_a_prefix() {
+        let settings = settings_with("/games", "");
+        for platform in ["Switch", "PS1", "PS2"] {
+            assert_eq!(prefix_dir(&settings, platform, &format!("{platform}/X")), None);
+        }
+    }
+
+    #[test]
+    fn no_install_root_and_no_prefix_root_means_no_prefix() {
+        // Rather than silently composing a path relative to nothing.
+        assert_eq!(prefix_dir(&settings_with("", ""), "PC", "PC/X"), None);
     }
 
     #[test]
