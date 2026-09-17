@@ -1036,6 +1036,52 @@
       </div>
 
       <div class="setting-block">
+        <label class="setting-label" for="save-sync-toggle">Cloud saves</label>
+        <div class="setting-desc">
+          Keeps save data on the library server so a playthrough follows you between machines.
+          A save is uploaded when you quit a game and offered back when this machine is behind.
+          The server keeps the last few versions, and restoring moves the local save aside
+          rather than deleting it.
+        </div>
+        <div class="setting-input-row">
+          <button class="browse-button" id="save-sync-toggle" type="button">Off</button>
+          <input class="setting-input" id="device-name-input" type="text"
+                 placeholder="This machine's name, shown in save history" autocomplete="off">
+        </div>
+      </div>
+
+      <div class="setting-block" id="switch-saves-block">
+        <label class="setting-label" for="switch-data-dir-input">Switch save location</label>
+        <div class="setting-desc">
+          The emulator's own data directory — saves live under <code>nand/user/save</code> inside
+          it. Each game also needs its Title ID, which is how the emulator files saves; play a
+          game once, then pick its ID below. IDs that already have save data are offered.
+        </div>
+        <div class="setting-input-row">
+          <input class="setting-input" id="switch-data-dir-input" type="text"
+                 placeholder="/home/you/.local/share/eden" autocomplete="off">
+          <button class="browse-button" id="browse-switch-data-dir" type="button">Browse…</button>
+        </div>
+        <div id="title-id-rows"></div>
+      </div>
+
+      <div class="setting-block">
+        <label class="setting-label" for="prefix-root-input">Wine prefixes (PC)</label>
+        <div class="setting-desc">
+          Each PC game runs in its own Wine prefix, which isolates games from each other and
+          makes that prefix the game's save data. Leave this empty to keep them in
+          <code>.wine-prefixes</code> beside the install directory. Games played before this
+          existed kept their saves in the shared <code>~/.wine</code>; copy those across by hand
+          if you need them.
+        </div>
+        <div class="setting-input-row">
+          <input class="setting-input" id="prefix-root-input" type="text"
+                 placeholder="(beside the install directory)" autocomplete="off">
+          <button class="browse-button" id="browse-prefix-root" type="button">Browse…</button>
+        </div>
+      </div>
+
+      <div class="setting-block">
         <label class="setting-label">Emulators &amp; dependencies</label>
         <div class="setting-desc">
           Command and arguments used to launch each platform. For a native install, Command is
@@ -1606,15 +1652,136 @@ function chosenExecutable(game) {
   return launchCandidates.includes(override) ? override : null;
 }
 
-function launchGame(game) {
+/* ---------------------------------------------------------------
+ * CLOUD SAVES
+ * ---------------------------------------------------------------
+ * Two moments matter: just before a game starts, when this machine
+ * might be behind, and just after it exits, when it's almost certainly
+ * ahead. Everything else — where the save lives, how it's packed — is
+ * the backend's problem; this decides only what to do about a
+ * difference, and asks when the answer isn't obvious.
+ * --------------------------------------------------------------- */
+const SAVE_SYNC_SUPPORTED = ['Switch', 'PC'];
+
+function saveSyncApplies(game) {
+  return !!TAURI
+    && state.saveSync.enabled
+    && game.installed
+    && SAVE_SYNC_SUPPORTED.includes(game.platform);
+}
+
+async function fetchSaveStatus(game) {
+  return TAURI.core.invoke('save_status', {
+    gameId: game.id,
+    platform: game.platform,
+    serverBase: state.serverBase,
+  });
+}
+
+/* Pulls a newer remote save down before the game opens it. Returns
+   false only when the user was asked and said to stop — a failure to
+   reach the server is not a reason to block someone from playing. */
+async function syncBeforeLaunch(game) {
+  if (!saveSyncApplies(game)) return true;
+
+  let status;
+  try {
+    status = await fetchSaveStatus(game);
+  } catch (err) {
+    console.error('save status failed', err);
+    return true;
+  }
+  if (status.unavailable) return true; // not configured for this game yet
+
+  if (status.state === 'remote_only' || status.state === 'remote_newer') {
+    // remote_only is not a conflict — there is nothing here to lose —
+    // so it restores without asking. remote_newer means this machine
+    // has a save too, and picking wrong costs a playthrough.
+    const ask = status.state === 'remote_newer';
+    if (ask && !confirmSaveChoice(game, status)) return true;
+    try {
+      await TAURI.core.invoke('download_save', {
+        gameId: game.id, platform: game.platform,
+        serverBase: state.serverBase, version: null,
+      });
+      setSaveNote(game, 'Restored the newer save from the server.');
+    } catch (err) {
+      console.error('save restore failed', err);
+      // Refuse to launch: opening the game now would overwrite the
+      // newer remote save with this machine's older one, which is the
+      // exact outcome this feature exists to prevent.
+      setSaveNote(game, `Could not restore the save: ${err}`);
+      return false;
+    }
+  }
+  return true;
+}
+
+/* Uploads after the session ends. Silent on success — this is meant to
+   be invisible — and never interrupts, since by now the game is closed
+   and there is nothing the user is waiting on. */
+async function syncAfterExit(gameId) {
+  const game = GAMES.find(g => g.id === gameId);
+  if (!game || !saveSyncApplies(game)) return;
+  try {
+    const version = await TAURI.core.invoke('upload_save', {
+      gameId: game.id, platform: game.platform, serverBase: state.serverBase,
+    });
+    if (version && !version.unchanged) setSaveNote(game, 'Save uploaded.');
+  } catch (err) {
+    // A missing save directory is the normal case for a game that
+    // doesn't write one, so this is logged rather than surfaced.
+    console.error('save upload failed', err);
+  }
+}
+
+function setupGameExitListener() {
+  if (!TAURI) return;
+  TAURI.event.listen('game:exited', (event) => syncAfterExit(event.payload));
+}
+
+function confirmSaveChoice(game, status) {
+  const local = formatSaveMoment(status.local_modified);
+  const remote = status.latest || {};
+  const device = remote.device ? ` from ${remote.device}` : '';
+  return confirm(
+    `${game.title} has a newer save on the server${device}.\n\n`
+    + `On the server: ${formatSaveMoment(Number(remote.saved_at) || 0)}\n`
+    + `On this machine: ${local}\n\n`
+    + 'Restore the server\'s save? Your current save is kept as a backup either way.\n'
+    + 'Cancel to keep playing with this machine\'s save.'
+  );
+}
+
+function formatSaveMoment(epochSeconds) {
+  if (!epochSeconds) return 'nothing saved';
+  return new Date(epochSeconds * 1000).toLocaleString();
+}
+
+/* Save messages share the install-error element rather than adding a
+   second status line to the detail view — only one of the two can be
+   relevant at a time, since a game can't be installing and running. */
+function setSaveNote(game, message) {
+  if (currentDetailId !== game.id) return;
+  const el = document.getElementById('install-error');
+  el.textContent = message;
+  el.style.display = 'block';
+}
+
+async function launchGame(game) {
   if (!TAURI) return; // nothing to actually launch in a browser preview
   if (!game.localDir) {
     console.error('no local install path recorded for', game.id);
     return;
   }
+  // Awaited, not fired alongside: starting the game first would let it
+  // open — and then overwrite — a save this machine is behind on.
+  if (!(await syncBeforeLaunch(game))) return;
+
   TAURI.core.invoke('launch_game', {
     installDir: game.localDir,
     platform: game.platform,
+    gameId: game.id,
     // Null rather than omitted when there's no explicit choice: the
     // backend then applies its own ranking, which is what every
     // single-candidate title relies on.
@@ -1635,6 +1802,8 @@ let state = {
   serverBase: '',
   installRoot: '',
   launchOverrides: {}, // game id -> path, relative to that game's install dir
+  prefixRoot: '',
+  saveSync: { enabled: false, device_name: '', switch_data_dir: '', title_ids: {} },
 };
 
 /* ---------------------------------------------------------------
@@ -1672,6 +1841,13 @@ async function loadSettings() {
   state.installRoot = s.install_root;
   state.emulators = s.emulators;
   state.launchOverrides = s.launch_overrides || {};
+  state.prefixRoot = s.prefix_root || '';
+  state.saveSync = s.save_sync || state.saveSync;
+  document.getElementById('prefix-root-input').value = state.prefixRoot;
+  document.getElementById('device-name-input').value = state.saveSync.device_name || '';
+  document.getElementById('switch-data-dir-input').value = state.saveSync.switch_data_dir || '';
+  updateSaveSyncUI();
+  renderTitleIdRows();
   document.getElementById('server-base-input').value = s.server_base;
   document.getElementById('install-root-input').value = s.install_root;
   updateSoundToggleUI();
@@ -1687,6 +1863,8 @@ async function persistSettings() {
       sound_enabled: state.soundEnabled,
       emulators: state.emulators,
       launch_overrides: state.launchOverrides,
+      prefix_root: state.prefixRoot,
+      save_sync: state.saveSync,
     },
   });
 }
@@ -2317,6 +2495,16 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  if (e.target.closest('#browse-switch-data-dir')) {
+    browseForSwitchDataDir();
+    return;
+  }
+
+  if (e.target.closest('#browse-prefix-root')) {
+    browseForPrefixRoot();
+    return;
+  }
+
   const checkBtn = e.target.closest('.emu-check');
   if (checkBtn) {
     const target = checkBtn.dataset.check;
@@ -2335,6 +2523,97 @@ document.addEventListener('click', (e) => {
   if (isLaunchMenuOpen() && !e.target.closest('.launch-dropdown')) closeLaunchMenu();
 });
 
+function updateSaveSyncUI() {
+  const on = !!state.saveSync.enabled;
+  const toggle = document.getElementById('save-sync-toggle');
+  toggle.textContent = on ? 'On' : 'Off';
+  toggle.setAttribute('aria-pressed', String(on));
+  // The Switch block is only meaningful while sync is on; dimming it
+  // rather than hiding it keeps the settings layout from jumping.
+  document.getElementById('switch-saves-block').style.opacity = on ? '1' : '0.45';
+}
+
+/* One row per installed Switch game, each offering the Title IDs that
+   actually have save data on this machine. Typing a 16-digit hex
+   string from memory is not a reasonable thing to ask, so the list is
+   read off the emulator's own directory. */
+function renderTitleIdRows() {
+  const container = document.getElementById('title-id-rows');
+  const games = GAMES.filter(g => g.platform === 'Switch' && g.installed);
+
+  if (!games.length) {
+    container.innerHTML = '<div class="setting-desc">No Switch games are installed yet.</div>';
+    return;
+  }
+
+  container.innerHTML = games.map(game => {
+    const mapped = state.saveSync.title_ids[game.id] || '';
+    const options = ['<option value="">Not mapped</option>']
+      .concat(switchTitleIds.map(id =>
+        `<option value="${escapeAttr(id)}"${id === mapped ? ' selected' : ''}>${escapeHTML(id)}</option>`))
+      // An id saved previously whose save directory has since gone is
+      // still shown, rather than silently reverting to "Not mapped".
+      .concat(mapped && !switchTitleIds.includes(mapped)
+        ? [`<option value="${escapeAttr(mapped)}" selected>${escapeHTML(mapped)} (no save data)</option>`]
+        : []);
+    return `
+      <div class="emulator-row">
+        <div class="emulator-row-header">
+          <span class="emulator-name">${escapeHTML(game.title)}</span>
+        </div>
+        <select class="setting-input title-id-select" data-game-id="${escapeAttr(game.id)}">
+          ${options.join('')}
+        </select>
+      </div>`;
+  }).join('');
+}
+
+let switchTitleIds = [];
+
+async function refreshSwitchTitleIds() {
+  switchTitleIds = [];
+  const dir = state.saveSync.switch_data_dir;
+  if (TAURI && dir) {
+    try {
+      switchTitleIds = await TAURI.core.invoke('list_switch_title_ids', { switchDataDir: dir });
+    } catch (err) {
+      console.error('failed to list title ids', err);
+    }
+  }
+  renderTitleIdRows();
+}
+
+document.getElementById('save-sync-toggle').addEventListener('click', () => {
+  state.saveSync.enabled = !state.saveSync.enabled;
+  updateSaveSyncUI();
+  persistSettings();
+});
+
+document.getElementById('device-name-input').addEventListener('change', (e) => {
+  state.saveSync.device_name = e.target.value.trim();
+  persistSettings();
+});
+
+document.getElementById('switch-data-dir-input').addEventListener('change', (e) => {
+  state.saveSync.switch_data_dir = e.target.value.trim();
+  persistSettings();
+  refreshSwitchTitleIds();
+});
+
+document.getElementById('prefix-root-input').addEventListener('change', (e) => {
+  state.prefixRoot = e.target.value.trim();
+  persistSettings();
+});
+
+document.getElementById('title-id-rows').addEventListener('change', (e) => {
+  const select = e.target.closest('.title-id-select');
+  if (!select) return;
+  const gameId = select.dataset.gameId;
+  if (select.value) state.saveSync.title_ids[gameId] = select.value;
+  else delete state.saveSync.title_ids[gameId];
+  persistSettings();
+});
+
 document.getElementById('server-base-input').addEventListener('change', (e) => {
   state.serverBase = e.target.value.trim();
   persistSettings();
@@ -2345,19 +2624,42 @@ document.getElementById('install-root-input').addEventListener('change', (e) => 
   persistSettings();
 });
 
-async function browseForInstallRoot() {
-  if (!TAURI) return; // no native folder picker in a plain-browser preview
+/* Opens the native folder picker and returns the chosen path, or null
+   if it was cancelled or there's no Tauri runtime to ask. */
+async function browseForFolder() {
+  if (!TAURI) return null; // no native folder picker in a plain-browser preview
   // window.__TAURI__.dialog does not exist in a no-bundler setup — the
   // official plugin JS package is a real ES module meant for import
   // resolution, not a global-attaching script, so withGlobalTauri alone
   // doesn't expose it. This calls the plugin's underlying command the
   // same way that package's own open() does internally.
-  const selected = await TAURI.core.invoke('plugin:dialog|open', {
+  return await TAURI.core.invoke('plugin:dialog|open', {
     options: { directory: true, multiple: false },
   });
-  if (!selected) return; // user cancelled
+}
+
+async function browseForInstallRoot() {
+  const selected = await browseForFolder();
+  if (!selected) return;
   state.installRoot = selected;
   document.getElementById('install-root-input').value = selected;
+  persistSettings();
+}
+
+async function browseForSwitchDataDir() {
+  const selected = await browseForFolder();
+  if (!selected) return;
+  state.saveSync.switch_data_dir = selected;
+  document.getElementById('switch-data-dir-input').value = selected;
+  persistSettings();
+  refreshSwitchTitleIds();
+}
+
+async function browseForPrefixRoot() {
+  const selected = await browseForFolder();
+  if (!selected) return;
+  state.prefixRoot = selected;
+  document.getElementById('prefix-root-input').value = selected;
   persistSettings();
 }
 
@@ -2839,12 +3141,17 @@ window.addEventListener('resize', () => {
 async function init() {
   renderGrid(); // shows the "Loading your library…" state immediately
   setupInstallStatusListener();
+  setupGameExitListener();
 
   await loadSettings();   // must resolve first — loadGames() needs state.serverBase
   updateSoundToggleUI();
 
   await loadGames();
   isLoading = false;
+
+  // Needs both: the settings supply the emulator directory to scan, and
+  // the catalog supplies the installed Switch games to offer rows for.
+  refreshSwitchTitleIds();
 
   renderPlatformNav();
   renderStatusNav();

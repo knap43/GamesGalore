@@ -1,6 +1,7 @@
 mod dependencies;
 mod install_state;
 mod launcher;
+mod saves;
 mod server;
 mod settings;
 
@@ -17,6 +18,10 @@ fn main() {
             install_state::cancel_install,
             launcher::launch_game,
             launcher::list_launch_candidates,
+            saves::save_status,
+            saves::upload_save,
+            saves::download_save,
+            saves::list_switch_title_ids,
             settings::get_settings,
             settings::save_settings,
         ])

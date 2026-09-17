@@ -388,7 +388,7 @@ mod tests {
 /// would turn it into `%2F`, which isn't guaranteed to be treated as a
 /// separator by the time it reaches Flask's routing. Encoding each
 /// segment on its own and rejoining with `/` avoids that ambiguity.
-fn encode_path_segments(id: &str) -> String {
+pub fn encode_path_segments(id: &str) -> String {
     id.split('/')
         .map(|part| urlencoding::encode(part).into_owned())
         .collect::<Vec<_>>()

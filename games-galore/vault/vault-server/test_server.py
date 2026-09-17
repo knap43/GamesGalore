@@ -185,6 +185,67 @@ def main() -> int:
           sorted(p.relative_to(pc_dest).as_posix() for p in pc_dest.rglob("*.exe")),
           ["bin/HollowMeridian.exe", "redist/vcredist_x64.exe", "unins000.exe"])
 
+    print("\n--- cloud saves ---")
+    srv.SAVE_ROOT = tmp / "saves"
+    srv.SAVE_VERSIONS_KEPT = 3
+
+    def blob(n):
+        return b"SAVEDATA" * n
+
+    r = client.post("/saves/Switch/198X?device=laptop&saved_at=2026-09-17T10:00:00Z",
+                    data=blob(10), content_type="application/octet-stream")
+    check("upload accepted", r.status_code, 200)
+    first = r.get_json()
+    check("upload records size", first["size_bytes"], len(blob(10)))
+    check("upload records the device", first["device"], "laptop")
+    check("upload records the client's saved_at", first["saved_at"], "2026-09-17T10:00:00Z")
+
+    listing = client.get("/saves/Switch/198X").get_json()["versions"]
+    check("the version is listed", [v["version"] for v in listing], [first["version"]])
+
+    r = client.get(f"/saves/Switch/198X/{first['version']}")
+    check("download returns the exact bytes", r.data, blob(10))
+
+    r = client.post("/saves/Switch/198X", data=blob(10),
+                    content_type="application/octet-stream")
+    check("an identical re-upload is not a new version", r.get_json().get("unchanged"), True)
+    check("...and does not grow the history",
+          len(client.get("/saves/Switch/198X").get_json()["versions"]), 1)
+
+    import time
+    for n in (11, 12, 13):
+        time.sleep(1.05)  # versions are second-resolution; keep them distinct
+        client.post("/saves/Switch/198X", data=blob(n), content_type="application/octet-stream")
+    listing = client.get("/saves/Switch/198X").get_json()["versions"]
+    check("retention caps the stored versions", len(listing), 3)
+    check("newest is first", listing[0]["size_bytes"], len(blob(13)))
+    check("the pruned archive is gone from disk",
+          len(list((srv.SAVE_ROOT / "Switch" / "198X").glob("*.tar.gz"))), 3)
+
+    check("a game with no saves lists nothing",
+          client.get("/saves/PC/Nothing Saved").get_json()["versions"], [])
+    check("an empty upload is refused",
+          client.post("/saves/Switch/198X", data=b"").status_code, 400)
+    check("an unknown version 404s",
+          client.get("/saves/Switch/198X/nope").status_code, 404)
+    # Percent-encoded, because Werkzeug normalises a literal "/../" out
+    # of the path before routing ever sees it — the encoded form is what
+    # actually arrives at _safe_segment as a segment to validate.
+    check("an encoded dot-dot segment is refused",
+          [client.post("/saves/%2e%2e/198X", data=b"x").status_code,
+           client.get("/saves/%2e%2e/198X").status_code], [400, 400])
+    check("an encoded dot segment is refused",
+          client.get("/saves/%2e/198X").status_code, 400)
+    check("a dot segment is refused", client.get("/saves/./198X").status_code, 400)
+    check("saves for two platforms do not collide",
+          (client.post("/saves/PC/198X", data=blob(1),
+                       content_type="application/octet-stream").status_code,
+           len(client.get("/saves/PC/198X").get_json()["versions"])), (200, 1))
+    # Only the two real platform directories exist — no refused request
+    # managed to create anything of its own along the way.
+    check("nothing escaped SAVE_ROOT",
+          sorted(d.name for d in srv.SAVE_ROOT.iterdir()), ["PC", "Switch"])
+
     print("\n--- refusals ---")
     check("path traversal refused",
           client.get("/download/PC/Hollow Meridian/../../../etc/passwd").status_code
