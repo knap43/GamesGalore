@@ -1036,15 +1036,23 @@
       </div>
 
       <div class="setting-block">
-        <label class="setting-label" for="save-sync-toggle">Cloud saves</label>
-        <div class="setting-desc">
-          Keeps save data on the library server so a playthrough follows you between machines.
-          A save is uploaded when you quit a game and offered back when this machine is behind.
-          The server keeps the last few versions, and restoring moves the local save aside
-          rather than deleting it.
+        <div class="setting-row">
+          <div class="setting-text">
+            <div class="setting-label">Cloud saves</div>
+            <div class="setting-desc" id="save-sync-desc">
+              Keeps save data on the library server so a playthrough follows you between
+              machines. A save is uploaded when you quit a game and offered back when this
+              machine is behind. The server keeps the last few versions, and restoring moves
+              the local save aside rather than deleting it.
+            </div>
+            <div class="setting-desc" id="save-sync-state" style="margin-top:6px;"></div>
+          </div>
+          <button class="toggle-switch" id="save-sync-toggle" role="switch" aria-checked="true"
+                  aria-describedby="save-sync-desc" tabindex="0">
+            <span class="toggle-knob"></span>
+          </button>
         </div>
-        <div class="setting-input-row">
-          <button class="browse-button" id="save-sync-toggle" type="button">Off</button>
+        <div class="setting-input-row" style="margin-top:12px;">
           <input class="setting-input" id="device-name-input" type="text"
                  placeholder="This machine's name, shown in save history" autocomplete="off">
         </div>
@@ -1691,7 +1699,11 @@ async function syncBeforeLaunch(game) {
     console.error('save status failed', err);
     return true;
   }
-  if (status.unavailable) return true; // not configured for this game yet
+  // A null or malformed status must not block a launch. The throw this
+  // guards against would land outside the try above, so it escaped
+  // syncBeforeLaunch entirely and stopped the game opening at all —
+  // the worst possible failure mode for a convenience feature.
+  if (!status || status.unavailable) return true; // not configured for this game yet
 
   if (status.state === 'remote_only' || status.state === 'remote_newer') {
     // remote_only is not a conflict — there is nothing here to lose —
@@ -1803,7 +1815,9 @@ let state = {
   installRoot: '',
   launchOverrides: {}, // game id -> path, relative to that game's install dir
   prefixRoot: '',
-  saveSync: { enabled: false, device_name: '', switch_data_dir: '', title_ids: {} },
+  // Mirrors SaveSyncConfig::default() in settings.rs — on, and
+  // inert until there's a save location it can actually use.
+  saveSync: { enabled: true, device_name: '', switch_data_dir: '', title_ids: {} },
 };
 
 /* ---------------------------------------------------------------
@@ -2523,14 +2537,25 @@ document.addEventListener('click', (e) => {
   if (isLaunchMenuOpen() && !e.target.closest('.launch-dropdown')) closeLaunchMenu();
 });
 
+/* Off doesn't disable saving — games always save locally, and the
+   emulators neither know nor care about this setting. All it decides is
+   whether those local saves are also mirrored to the server. The
+   description below the switch says so, because "Cloud saves: off"
+   could otherwise read as "saving is off", which would be alarming and
+   wrong. */
 function updateSaveSyncUI() {
   const on = !!state.saveSync.enabled;
   const toggle = document.getElementById('save-sync-toggle');
-  toggle.textContent = on ? 'On' : 'Off';
-  toggle.setAttribute('aria-pressed', String(on));
-  // The Switch block is only meaningful while sync is on; dimming it
-  // rather than hiding it keeps the settings layout from jumping.
-  document.getElementById('switch-saves-block').style.opacity = on ? '1' : '0.45';
+  toggle.classList.toggle('on', on);
+  toggle.setAttribute('aria-checked', String(on));
+  document.getElementById('save-sync-state').textContent = on
+    ? 'Saves are kept on this machine and mirrored to the server.'
+    : 'Saves are kept on this machine only. Nothing is uploaded or restored.';
+  // The Switch and prefix blocks only matter while sync is on; dimming
+  // rather than hiding keeps the settings layout from jumping.
+  for (const id of ['switch-saves-block']) {
+    document.getElementById(id).style.opacity = on ? '1' : '0.45';
+  }
 }
 
 /* One row per installed Switch game, each offering the Title IDs that
