@@ -811,6 +811,15 @@
     line-height: 1.5;
     margin-bottom: 18px;
     word-break: break-word;
+    /* Sized to the message rather than the column. "Save uploaded."
+       stretched across the whole detail view read as a banner, which
+       is far more weight than a two-word confirmation deserves. Still
+       a block, because display is toggled inline by the JS and would
+       override anything set here; fit-content shrinks it without that
+       fight. The cap keeps a long install failure readable rather than
+       letting it run the full width of a wide window. */
+    width: fit-content;
+    max-width: min(100%, 720px);
   }
   .install-error.is-good {
     background: rgba(63,217,155,0.1);
