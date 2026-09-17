@@ -85,14 +85,69 @@ pub struct SaveSyncConfig {
 impl Default for SaveSyncConfig {
     fn default() -> Self {
         Self {
-            // Off until someone points it at an emulator directory:
-            // syncing save data is not something to start doing to
-            // people's playthroughs on their behalf.
-            enabled: false,
+            // On by default. It stays inert until there's somewhere to
+            // sync from — a Switch title needs its data directory and
+            // Title ID mapped, a PC title needs a prefix that exists —
+            // so this costs nothing until it can actually work, and
+            // then works without anyone having to discover a setting.
+            //
+            // It is not a destructive default: local saves remain the
+            // source of truth, and the only automatic overwrite is
+            // restoring onto a machine with no save of its own at all.
+            // Anything that could lose progress asks first.
+            enabled: true,
             device_name: default_device_name(),
             switch_data_dir: String::new(),
             title_ids: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cloud_saves_default_to_on() {
+        assert!(Settings::default().save_sync.enabled);
+    }
+
+    #[test]
+    fn a_default_config_has_nowhere_to_sync_from_yet() {
+        // Why defaulting to on is safe: with no emulator directory and
+        // no mapped titles, every lookup fails and the feature does
+        // nothing until it's pointed at something real.
+        let cfg = SaveSyncConfig::default();
+        assert!(cfg.switch_data_dir.is_empty());
+        assert!(cfg.title_ids.is_empty());
+    }
+
+    #[test]
+    fn settings_written_before_cloud_saves_existed_still_load() {
+        // The field is serde(default), so an older settings.json is
+        // upgraded rather than discarded and replaced wholesale.
+        let older = r#"{
+            "server_base": "http://host:8420",
+            "install_root": "/games",
+            "sound_enabled": true
+        }"#;
+        let settings: Settings = serde_json::from_str(older).unwrap();
+        assert_eq!(settings.server_base, "http://host:8420");
+        assert!(settings.save_sync.enabled, "should pick up the new default");
+        assert!(settings.launch_overrides.is_empty());
+        assert!(settings.prefix_root.is_empty());
+    }
+
+    #[test]
+    fn an_explicit_opt_out_survives_a_reload() {
+        // Someone who turned it off must stay opted out — the default
+        // applies to absent fields, never to a stored false.
+        let stored = r#"{
+            "server_base": "", "install_root": "", "sound_enabled": true,
+            "save_sync": { "enabled": false, "device_name": "x", "switch_data_dir": "" }
+        }"#;
+        let settings: Settings = serde_json::from_str(stored).unwrap();
+        assert!(!settings.save_sync.enabled);
     }
 }
 

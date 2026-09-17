@@ -127,8 +127,23 @@ files wherever Games Galore happened to be started from.
 ### Cloud saves
 
 Save data is archived, pushed to the library server, and pulled back on another
-machine. It's off until switched on in Settings: syncing someone's saves is not
-something to start doing on their behalf.
+machine.
+
+**On by default**, with a switch in Settings to turn it off. Defaulting to on is
+safe because it stays inert until there is somewhere to sync from — a Switch
+title needs its data directory and Title ID mapped, a PC title needs a prefix
+that exists — so it costs nothing until it can actually work, and then works
+without anyone having to find a setting first. It is also not a destructive
+default: local saves remain the source of truth, and the only automatic
+overwrite is restoring onto a machine that has no save of its own. Anything that
+could lose progress asks first.
+
+Turning it **off** does not stop games saving. Saves are always written locally,
+and the emulators neither know nor care about this setting; all it decides is
+whether those local saves are mirrored to the server. The switch says as much in
+the line beneath it, because "cloud saves: off" could otherwise read as "saving
+is off". An explicit opt-out is stored and honoured — the default applies only
+to a settings file that has never carried the field.
 
 **Where saves are.** This is the whole difficulty, and it differs by platform.
 Switch saves live under the emulator's data directory in a fixed tree keyed by
