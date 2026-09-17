@@ -1,3 +1,4 @@
+mod catalog_cache;
 mod dependencies;
 mod install_state;
 mod launcher;
@@ -10,6 +11,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             server::fetch_library,
+            catalog_cache::get_cached_library,
             server::fetch_server_status,
             dependencies::check_dependency,
             install_state::get_install_states,

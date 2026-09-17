@@ -11,6 +11,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | --- | --- |
 | `server.rs` | Fetches the catalog (`GET /library`) and the server's `nsz` status (`GET /status`). `Game` and `GameFile` mirror the server's JSON shape exactly. |
 | `install_state.rs` | The local record of what's on this machine (`installs.json` in the app data dir, keyed by `Game.id`), plus `install_game`, `uninstall_game` and `cancel_install`. |
+| `catalog_cache.rs` | `installed-cache.json` beside it: the catalog entries for installed titles, so the shelf is on screen at launch without waiting on the server. See **Starting up before the server answers** below. |
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
@@ -48,6 +49,37 @@ durable fact worth keeping mid-install is that one is in progress, and the
 `Downloading` status persisted at the start records exactly that — which is
 also what lets `cancel_install` recognise and clear an install orphaned by the
 app closing mid-download.
+
+### Starting up before the server answers
+
+`GET /library` rescans the entire source tree on every call, so on a large
+library the grid used to sit on "Loading your library…" for seconds after
+launch — including for the handful of titles already on this machine, which the
+app opens on and which it could have drawn from local knowledge the whole time.
+
+`catalog_cache.rs` keeps those entries in `installed-cache.json`, and the
+frontend's startup runs in two passes: `get_cached_library` paints the
+installed shelf immediately, then `fetch_library` replaces it with the real
+catalog when it arrives. The sidebar footer says the rest is still loading
+while that is in flight, so the counts above it read as provisional rather than
+wrong.
+
+The cache is scoped to installed titles on purpose. A stale entry for something
+on your disk costs at most an out-of-date name or blurb next to files that are
+right there; a stale copy of the other several hundred would be offering
+downloads of titles the server may no longer have. It also stays small enough
+to read and parse without anyone noticing.
+
+It is kept in step with `installs.json` by the same transitions that write it —
+a finished install adds its entry, an uninstall or cancel removes it, and a
+successful fetch refreshes whatever entries it still covers. Nothing here is
+load-bearing: a missing, unreadable or malformed cache reads as empty and costs
+a slower first paint, and a cache that cannot be written never fails the
+install or fetch that triggered it.
+
+One deliberate consequence: if the server is unreachable, the cached shelf
+stays. The installed games are on disk and still launchable, and emptying the
+grid would be the single response that makes the app useless offline.
 
 ### Choosing what to launch
 
@@ -520,7 +552,10 @@ toolchain.
 involved: `launcher.rs`'s file resolution — the PC executable search across
 subdirectories, its exclusion of installers, the PS1/PS2 `.cue` rule, stability
 of the Switch pick, argument quoting — and `install_state.rs`'s progress
-arithmetic, path-segment encoding, and error-detail extraction. Run both from
+arithmetic, path-segment encoding, and error-detail extraction, plus
+`catalog_cache.rs`'s merge rules — live entries winning over cached ones, an
+installed title the server no longer lists surviving, an uninstalled one being
+dropped, and a missing or corrupt cache reading as empty rather than erroring. Run both from
 `src-tauri/`. Note that `cargo check` needs the system webview headers listed
 under prerequisites even though it never links a GUI.
 
@@ -531,6 +566,14 @@ passes it to `launch_game`, drops an override that merely restates the default,
 disappears on uninstall, keeps the arrow-key chain free of dead steps whether
 or not it is showing, and leaves Play working when the candidate lookup fails
 outright.
+
+Startup is covered the same way, against a deliberately slow `fetch_library`:
+that the cached shelf is drawn before the fetch resolves, that the cache is
+read before the server is asked, that the full catalog replaces it cleanly,
+that an unreachable server leaves the shelf standing, that an empty cache
+behaves exactly as before, that a cache whose titles are no longer installed
+doesn't strand the user behind a filter, and that toggling that filter
+mid-refresh isn't overridden when the catalog lands.
 
 The server side's scanning and routes are covered separately by fixture tests
 that build real game folders, including a simulated install that fetches every

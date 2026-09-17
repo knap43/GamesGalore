@@ -122,6 +122,31 @@
     line-height: 1.5;
   }
   .sidebar-footer strong { color: var(--text-muted); font-weight: 500; }
+  /* Shown only while the cached shelf is on screen and the full
+     catalog is still on its way, so the counts above it are visibly
+     provisional rather than silently wrong. */
+  .sidebar-refresh {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--text-faint);
+    opacity: 0.85;
+  }
+  .sidebar-refresh::before {
+    content: '';
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin-right: 6px;
+    vertical-align: middle;
+    border-radius: 50%;
+    background: var(--accent-pink);
+    animation: refresh-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes refresh-pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar-refresh::before { animation: none; opacity: 0.7; }
+  }
 
   #settings-nav { margin-top: auto; }
   .settings-icon { width: 15px; height: 15px; margin-right: 8px; flex-shrink: 0; }
@@ -1174,7 +1199,6 @@
 
       <div class="cta-row">
         <button class="cta-button" id="cta-button"></button>
-        <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
         <div class="launch-picker" id="launch-picker">
           <span class="launch-label" id="launch-label">Launch</span>
           <div class="launch-dropdown">
@@ -1186,6 +1210,7 @@
             <div class="launch-menu" id="launch-menu" role="listbox" aria-label="Which file to launch" hidden></div>
           </div>
         </div>
+        <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
         <span class="game-size" id="game-size"></span>
       </div>
 
@@ -1276,6 +1301,11 @@ const MOCK_GAMES = [
 let GAMES = [];
 let isLoading = true; // true until loadGames() resolves, so the empty
                        // grid reads as "loading", not "no matches"
+let isRefreshing = false; // true while the cached shelf is on screen and the
+                          // full catalog is still being fetched behind it
+let installedFilterTouched = false; // set the moment the user works the
+                                    // Installed filter themselves, so the
+                                    // startup default stops overriding them
 
 /* ---------------------------------------------------------------
  * GRID VIRTUALIZATION
@@ -1373,23 +1403,73 @@ function buildMedia(game) {
 /* ---------------------------------------------------------------
  * LOADING THE CATALOG
  * ---------------------------------------------------------------
- * Real mode: fetch the catalog from the Python server, then hydrate
- * install status for each game from the local record. Preview mode
- * (no Tauri runtime): fall back to the mock catalog untouched.
+ * Two passes in real mode. The first reads the local cache of the
+ * installed titles and paints them immediately; the second fetches
+ * the full catalog from the Python server and replaces it. Preview
+ * mode (no Tauri runtime) skips straight to the mock catalog.
  * --------------------------------------------------------------- */
+
+/* First paint, from disk. The Rust side keeps a copy of the catalog
+   entries for installed titles (catalog_cache.rs) precisely so this
+   can exist: /library rescans the entire source tree on every call,
+   which on a large library is seconds of an empty grid, while the
+   games you actually have on disk are known locally and could have
+   been on screen the whole time.
+
+   Returns whether anything was painted, which is what tells init()
+   whether the shelf is already up. */
+async function loadCachedGames() {
+  if (!TAURI) return false;
+
+  let cached = [];
+  try {
+    cached = await TAURI.core.invoke('get_cached_library');
+  } catch (err) {
+    console.error('failed to read the cached library', err);
+    return false;
+  }
+  if (!cached || cached.length === 0) return false;
+
+  GAMES = cached;
+  await hydrateInstallStatus();
+
+  // The cache holds installed titles by construction, so this is a
+  // deliberately partial catalog. Pinning the Installed filter on
+  // means it's presented as exactly that — the shelf you play from —
+  // rather than passed off as the whole library for the second or two
+  // before the rest arrives.
+  const painted = GAMES.some(g => g.installed);
+  if (painted) state.installedOnly = true;
+  return painted;
+}
+
+/* Second pass: the real catalog. Replaces whatever the cache painted,
+   in place, and leaves it alone if the server can't be reached. */
 async function loadGames() {
   if (!TAURI) {
     GAMES = MOCK_GAMES;
     return;
   }
 
+  let live = null;
   try {
-    GAMES = await TAURI.core.invoke('fetch_library', { serverBase: state.serverBase });
+    live = await TAURI.core.invoke('fetch_library', { serverBase: state.serverBase });
   } catch (err) {
+    // Deliberately not clearing GAMES here: with the server down, the
+    // cached titles are still installed, still on disk and still
+    // launchable, and emptying the grid would be the one response that
+    // makes the app useless offline. With no cache it's empty already.
     console.error('failed to fetch library', err);
-    GAMES = [];
   }
+  if (live) GAMES = live;
 
+  await hydrateInstallStatus();
+}
+
+/* Overlays the local install record onto whatever is in GAMES. Shared
+   by both passes, so a cached game and a freshly fetched one end up
+   carrying identical install fields. */
+async function hydrateInstallStatus() {
   let installStates = {};
   try {
     installStates = await TAURI.core.invoke('get_install_states');
@@ -2162,8 +2242,11 @@ function renderStatusNav() {
 
 function renderSidebarFooter() {
   const installedCount = GAMES.filter(g => g.installed).length;
+  const refreshing = isRefreshing
+    ? '<span class="sidebar-refresh">Loading the rest of your library…</span>'
+    : '';
   document.getElementById('sidebar-footer').innerHTML =
-    `<strong>${installedCount} of ${GAMES.length} titles</strong> installed locally`;
+    `<strong>${installedCount} of ${GAMES.length} titles</strong> installed locally${refreshing}`;
 }
 
 /* ---------------------------------------------------------------
@@ -2540,6 +2623,7 @@ document.addEventListener('click', (e) => {
       else state.platforms.add(value);
     } else if (type === 'status' && value === 'installed') {
       state.installedOnly = navItem.classList.contains('active');
+      installedFilterTouched = true;
     }
     renderGrid(true);
     return;
@@ -3105,27 +3189,28 @@ function moveDirection(dir) {
     return;
   }
 
-  // Play -> Uninstall -> launch picker, skipping whichever of the two
-  // isn't currently on screen, so the chain has no dead steps.
+  // Play -> launch picker -> Uninstall, matching the visual order and
+  // skipping whichever of the last two isn't on screen, so the chain
+  // has no dead steps.
   if (active.id === 'cta-button') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button', 'launch-trigger'));
-    return;
-  }
-
-  if (active.id === 'uninstall-button') {
-    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
-    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-trigger'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-trigger', 'uninstall-button'));
     return;
   }
 
   if (active.id === 'launch-trigger') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'left') focusNoScroll(nextCtaTarget('uninstall-button', 'cta-button'));
+    else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button'));
+    return;
+  }
+
+  if (active.id === 'uninstall-button') {
+    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
+    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
+    else if (dir === 'left') focusNoScroll(nextCtaTarget('launch-trigger', 'cta-button'));
     return;
   }
 
@@ -3265,32 +3350,56 @@ window.addEventListener('resize', () => {
 /* ---------------------------------------------------------------
  * INIT
  * --------------------------------------------------------------- */
+/* Everything that reflects the contents of GAMES. Called twice at
+   startup — once for the cached shelf, once for the real catalog. */
+function renderShell() {
+  renderPlatformNav();
+  renderStatusNav();
+  renderSidebarFooter();
+  renderGrid();
+}
+
 async function init() {
   renderGrid(); // shows the "Loading your library…" state immediately
   setupInstallStatusListener();
   setupGameExitListener();
 
-  await loadSettings();   // must resolve first — loadGames() needs state.serverBase
+  await loadSettings();   // must resolve first — both loads need state.serverBase
+                          // and the install root
   updateSoundToggleUI();
+
+  // Paint the installed titles from the local cache before asking the
+  // server anything, so the shelf is up and playable in the time it
+  // takes to read a small file rather than the time it takes the
+  // server to rescan the library. The fetch below then replaces this
+  // with the real catalog.
+  const paintedFromCache = await loadCachedGames();
+  if (paintedFromCache) {
+    isRefreshing = true;
+    renderShell();
+    focusNoScroll(document.querySelector('.nav-item'));
+  }
 
   await loadGames();
   isLoading = false;
+  isRefreshing = false;
 
   // Start on the installed games: that's the shelf you actually play
   // from, and on a 500-title library everything else is noise until
   // you go looking for it. Skipped when nothing is installed yet,
   // since filtering an empty result would show a new user an empty
-  // grid and no hint that their library is fine.
-  state.installedOnly = GAMES.some(g => g.installed);
+  // grid and no hint that their library is fine — and skipped once the
+  // user has worked the filter themselves, which they may well have
+  // done while this fetch was still in flight.
+  if (!installedFilterTouched) state.installedOnly = GAMES.some(g => g.installed);
 
   await findSwitchDataDir();
   renderSwitchSavesStatus();
 
-  renderPlatformNav();
-  renderStatusNav();
-  renderSidebarFooter();
-  renderGrid();
-  focusNoScroll(document.querySelector('.nav-item'));
+  renderShell();
+  // Only when the cache didn't already do it — refocusing here would
+  // pull the user out of the search box or an open game.
+  if (!paintedFromCache) focusNoScroll(document.querySelector('.nav-item'));
 }
 init();
 </script>
