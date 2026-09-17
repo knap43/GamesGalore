@@ -51,18 +51,41 @@ const NON_GAME_EXE_MARKERS: &[&str] = &[
     "config",
 ];
 
+/// Depth limit for the install-directory scan. Game trees are nowhere
+/// near this deep; it's a backstop, not a constraint.
+const MAX_SCAN_DEPTH: usize = 24;
+
 /// Collects every file under `dir`, at any depth. A PC game is an
 /// installed tree, so a non-recursive listing of the install directory
 /// will frequently not contain the executable at all.
+///
+/// Symlinks are not followed and the depth is capped, for the same
+/// reason the save walk refuses them: a link pointing back up its own
+/// tree turns this into an infinite recursion, and one pointing out of
+/// the install directory would offer something outside it as a thing
+/// to launch.
 fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_files_to_depth(dir, 0, out);
+}
+
+fn collect_files_to_depth(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth >= MAX_SCAN_DEPTH {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, out);
-        } else if path.is_file() {
+        // symlink_metadata rather than is_dir()/is_file(), both of
+        // which resolve the link and report on its target.
+        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        if meta.is_dir() {
+            collect_files_to_depth(&path, depth + 1, out);
+        } else if meta.is_file() {
             out.push(path);
         }
     }
