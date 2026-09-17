@@ -1,5 +1,5 @@
 # GamesGalore
-A video game library front-end that connects to a self-hosted server (server included).
+A game library front-end that connects to a self-hosted server (server included).
 
 Disclaimer: the code in its entirety was written by an LLM — use it at your own discretion.
 
