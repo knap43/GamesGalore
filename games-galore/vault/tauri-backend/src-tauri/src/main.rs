@@ -22,6 +22,9 @@ fn main() {
             saves::upload_save,
             saves::download_save,
             saves::list_switch_title_ids,
+            saves::detect_switch_title_id,
+            saves::detect_switch_data_dir,
+            saves::set_switch_title_id,
             settings::get_settings,
             settings::save_settings,
         ])

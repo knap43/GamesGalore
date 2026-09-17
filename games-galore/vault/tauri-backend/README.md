@@ -148,10 +148,39 @@ to a settings file that has never carried the field.
 **Where saves are.** This is the whole difficulty, and it differs by platform.
 Switch saves live under the emulator's data directory in a fixed tree keyed by
 the title's 16-hex-digit Title ID, which has no relationship to the library's
-folder names — so that one mapping has to be recorded per game, and Settings
-lists the IDs that actually have save data rather than asking anyone to type
-hex from memory. PC needs no mapping at all, because the prefix's
-`drive_c/users` is the save data.
+folder names. PC needs no mapping at all, because the prefix's `drive_c/users`
+*is* the save data.
+
+**Nothing about that is asked of the user.** There is no per-game configuration
+and no hex to look up — an earlier version listed a dropdown of Title IDs per
+installed game, which grew with the library and asked people to pick one
+near-identical hex string out of several. Identification is automatic, by three
+means in order of cost:
+
+1. **The filename.** Dump tools overwhelmingly name Switch files with the id in
+   brackets — `Bad North [0100C1F0051B4000][v0].nsp`. Free to read.
+2. **The ticket inside the NSP.** An NSP is a PFS0 archive whose header and
+   filename table are plain, unencrypted bytes, and a ticket is named for its
+   rights ID, whose first 16 hex digits *are* the Title ID. So the id comes out
+   without a key file and without decrypting anything — only the archive's table
+   of contents is read, never its content, which keeps it cheap on a
+   multi-gigabyte file.
+3. **Watching a session.** If neither yields anything, the save directories are
+   listed before the game runs and again after it exits; whichever appeared is
+   that game's. This needs no format knowledge at all, and the moment it works
+   is the moment the game first has a save worth syncing. If more than one
+   directory appears, nothing is recorded — guessing would file one game's saves
+   under another's name.
+
+Whatever is found is normalised to the base title, since an update shares its
+base game's save data and differs only in the low 12 bits. A folder holding a
+base game, its update and DLC resolves to the base, which is what the emulator
+files saves under.
+
+The emulator's data directory is probed for too, across the locations the
+Yuzu-derived emulators use, including Flatpak paths. A directory only counts if
+it actually contains the save tree. Settings shows one line reporting how many
+titles are identified, rather than a row per game.
 
 **Archives are positional.** Entries are stored relative to a root that
 restoring puts them back under — `nand/user/save/<...>/<title id>/...` rather

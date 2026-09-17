@@ -101,12 +101,27 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
             if cfg.switch_data_dir.trim().is_empty() {
                 return Err("the Switch emulator's data directory isn't set in Settings".into());
             }
-            let title_id = cfg.title_ids.get(game_id).map(String::as_str).unwrap_or("");
-            if title_id.trim().is_empty() {
-                return Err("this game has no Title ID mapped in Settings".into());
-            }
+            let known = cfg.title_ids.get(game_id).cloned().unwrap_or_default();
+            let title_id = if known.trim().is_empty() {
+                // Nothing recorded yet, so work it out from the game's
+                // own installed files and remember it. This is why
+                // there is no per-game configuration to fill in: the
+                // first time a title needs its id, it gets one.
+                let detected = crate::install_state::install_dir_for(&settings.install_root, game_id)
+                    .and_then(|dir| detect_switch_title_id(dir.to_string_lossy().to_string()))
+                    .ok_or_else(|| {
+                        "couldn't work out this game's Title ID from its files — \
+                         play it once and it will be identified automatically"
+                            .to_string()
+                    })?;
+                remember_title_id(app, game_id, &detected);
+                detected
+            } else {
+                known
+            };
+
             let root = PathBuf::from(&cfg.switch_data_dir);
-            let subpaths = find_switch_save_dirs(&root, title_id);
+            let subpaths = find_switch_save_dirs(&root, &title_id);
             if subpaths.is_empty() {
                 return Err(format!("no save directory found for Title ID {title_id}"));
             }
@@ -126,6 +141,26 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
         }
         _ => Err(format!("cloud saves aren't supported for {platform}")),
     }
+}
+
+/// Records a detected Title ID so the work isn't repeated, and so the
+/// UI can report how many titles are identified. Best-effort: failing
+/// to persist it costs a re-detection next time, not the sync.
+fn remember_title_id(app: &AppHandle, game_id: &str, title_id: &str) {
+    let mut settings = get_settings(app.clone());
+    settings
+        .save_sync
+        .title_ids
+        .insert(game_id.to_string(), title_id.to_string());
+    let _ = crate::settings::save_settings(app.clone(), settings);
+}
+
+/// Called by the frontend once it has worked out an id by watching what
+/// a play session created — the fallback for a title whose files gave
+/// nothing away.
+#[tauri::command]
+pub fn set_switch_title_id(app: AppHandle, game_id: String, title_id: String) {
+    remember_title_id(&app, &game_id, &title_id);
 }
 
 /// Every directory under the emulator's save tree whose own name is the
@@ -166,11 +201,161 @@ fn collect_named_dirs(dir: &Path, name: &str, depth: usize, out: &mut Vec<PathBu
     }
 }
 
-/// Lists the Title IDs that actually have save data, so the UI can
-/// offer them rather than asking someone to find a 16-digit hex string
-/// themselves. A game has to have been launched once for its id to
-/// appear here, which is the normal way someone arrives at this screen:
-/// play a bit, then map it.
+/// Works out a game's Title ID from the files it installed, so nobody
+/// has to look one up or pick it out of a list of near-identical hex
+/// strings.
+///
+/// Two sources, cheapest first:
+///
+///   1. The filename. Dump tools overwhelmingly name Switch files with
+///      the id in brackets — `Bad North [0100C1F0051B4000][v0].nsp` —
+///      and reading it costs nothing.
+///
+///   2. The ticket inside the NSP. An NSP is a PFS0 archive, whose
+///      header and filename table are plain, unencrypted bytes. A
+///      ticket is named after its rights ID, whose first 16 hex digits
+///      *are* the Title ID. So the id can be read without a key file
+///      and without decrypting anything — only the archive's table of
+///      contents is touched, never its content.
+///
+/// Whatever turns up is normalised to the base title (see
+/// `base_title_id`), because that is what saves are filed under.
+#[tauri::command]
+pub fn detect_switch_title_id(install_dir: String) -> Option<String> {
+    let dir = Path::new(&install_dir);
+    let mut found: Vec<u64> = Vec::new();
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return None;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        found.extend(title_ids_in_text(&name));
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nsp")) {
+            found.extend(title_ids_from_nsp(&path));
+        }
+    }
+
+    // A folder usually holds a base game plus its update and any DLC.
+    // Normalised, base and update collapse onto the same value while
+    // DLC sits above it, so the lowest is the base — which is the one
+    // the emulator files saves under.
+    found.iter().map(|id| base_title_id(*id)).min().map(|id| format!("{id:016X}"))
+}
+
+/// Updates share their base game's save data and differ only in the
+/// low 12 bits, so masking those off turns an update's id into the
+/// base id that saves are actually keyed by. DLC ids sit further out
+/// and survive this untouched, which is what lets the caller tell them
+/// apart by taking the lowest value.
+fn base_title_id(id: u64) -> u64 {
+    id & !0xFFF
+}
+
+/// Every 16-hex-digit run in a string, as numbers. Deliberately loose
+/// about delimiters — brackets, parentheses, underscores and bare runs
+/// all appear in the wild — but anchored on length, so a longer hash
+/// isn't chopped into a false positive.
+fn title_ids_in_text(text: &str) -> Vec<u64> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_hexdigit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && chars[i].is_ascii_hexdigit() {
+            i += 1;
+        }
+        // Exactly 16, not "at least": a 32-character content id would
+        // otherwise yield a bogus id from its first half.
+        if i - start == 16 {
+            let text: String = chars[start..i].iter().collect();
+            if let Ok(id) = u64::from_str_radix(&text, 16) {
+                // 01.. is the program-id prefix every retail title
+                // uses; anything else is some other kind of hash that
+                // happens to be the right length.
+                if text.starts_with("01") {
+                    out.push(id);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Reads the filename table out of a PFS0 archive and returns the
+/// Title IDs implied by any tickets in it.
+///
+/// Only the header, entry table and string table are read — a few
+/// kilobytes off the front of the file, never the content itself, so
+/// this stays cheap on a multi-gigabyte NSP and needs no keys.
+fn title_ids_from_nsp(path: &Path) -> Vec<u64> {
+    let Ok(names) = pfs0_entry_names(path) else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .filter(|n| n.to_ascii_lowercase().ends_with(".tik"))
+        // A ticket is named for its rights ID: 32 hex digits, of which
+        // the first 16 are the Title ID.
+        .filter_map(|n| n.get(..16).and_then(|id| u64::from_str_radix(id, 16).ok()))
+        .collect()
+}
+
+fn pfs0_entry_names(path: &Path) -> Result<Vec<String>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header).map_err(|e| e.to_string())?;
+    if &header[..4] != b"PFS0" {
+        return Err("not a PFS0 archive".into());
+    }
+
+    let count = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+    let string_table_size = u32::from_le_bytes(header[8..12].try_into().unwrap()) as usize;
+    // Guard rails against a corrupt or hostile header asking for a
+    // gigabyte of allocation before anything has been validated.
+    if count > 4096 || string_table_size > 1 << 20 {
+        return Err("implausible PFS0 header".into());
+    }
+
+    let mut entries = vec![0u8; count * 24];
+    file.read_exact(&mut entries).map_err(|e| e.to_string())?;
+    let mut strings = vec![0u8; string_table_size];
+    file.read_exact(&mut strings).map_err(|e| e.to_string())?;
+
+    let mut names = Vec::with_capacity(count);
+    for i in 0..count {
+        // Each 0x18 entry is offset, size, then the name's position in
+        // the string table at 0x10.
+        let at = i * 24 + 16;
+        let name_offset = u32::from_le_bytes(entries[at..at + 4].try_into().unwrap()) as usize;
+        if name_offset >= strings.len() {
+            continue;
+        }
+        let end = strings[name_offset..]
+            .iter()
+            .position(|b| *b == 0)
+            .map(|p| name_offset + p)
+            .unwrap_or(strings.len());
+        names.push(String::from_utf8_lossy(&strings[name_offset..end]).to_string());
+    }
+    let _ = file.seek(SeekFrom::Start(0));
+    Ok(names)
+}
+
+/// Lists the Title IDs that actually have save data. Used to work out
+/// which one a game created by comparing before and after a session —
+/// see the frontend's session-based detection — and as a last-resort
+/// manual list.
 #[tauri::command]
 pub fn list_switch_title_ids(switch_data_dir: String) -> Vec<String> {
     let base = Path::new(&switch_data_dir).join("nand").join("user").join("save");
@@ -198,6 +383,37 @@ pub fn list_switch_title_ids(switch_data_dir: String) -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
+}
+
+/// Finds the emulator's data directory in the places these emulators
+/// actually put it, so the field arrives filled in rather than as a
+/// path someone has to go and look up. Eden is a Yuzu fork and the
+/// family has used several names, so each is tried; a directory only
+/// counts if it actually contains the save tree, which rules out a
+/// leftover empty folder from an emulator that was removed.
+#[tauri::command]
+pub fn detect_switch_data_dir() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    let home = Path::new(&home);
+
+    let mut roots = vec![
+        home.join(".local/share"),
+        home.join(".var/app/dev.eden_emu.eden/data"), // Flatpak Eden
+        home.join(".var/app/org.yuzu_emu.yuzu/data"), // Flatpak Yuzu
+    ];
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        roots.insert(0, PathBuf::from(xdg));
+    }
+
+    for root in roots {
+        for name in ["eden", "yuzu", "sudachi", "citron", "suyu"] {
+            let candidate = root.join(name);
+            if candidate.join("nand").join("user").join("save").is_dir() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
 }
 
 fn is_hex16(path: &Path) -> bool {
@@ -647,6 +863,118 @@ mod tests {
         assert_eq!(bytes, 15);
         assert!(modified > 0, "should have found a modification time");
         fs::remove_dir_all(&data).unwrap();
+    }
+
+    /// Builds a real PFS0 archive with the given entry names, per the
+    /// format: magic, count, string-table size, padding, then a 0x18
+    /// entry each, then the NUL-separated names, then the data.
+    fn pfs0(names: &[&str]) -> Vec<u8> {
+        let mut strings = Vec::new();
+        let mut offsets = Vec::new();
+        for name in names {
+            offsets.push(strings.len() as u32);
+            strings.extend_from_slice(name.as_bytes());
+            strings.push(0);
+        }
+
+        let mut out = Vec::new();
+        out.extend_from_slice(b"PFS0");
+        out.extend_from_slice(&(names.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(strings.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        for (i, offset) in offsets.iter().enumerate() {
+            out.extend_from_slice(&(i as u64).to_le_bytes()); // data offset
+            out.extend_from_slice(&1u64.to_le_bytes());       // size
+            out.extend_from_slice(&offset.to_le_bytes());     // name position
+            out.extend_from_slice(&0u32.to_le_bytes());       // reserved
+        }
+        out.extend_from_slice(&strings);
+        out.extend_from_slice(&vec![0u8; names.len()]); // the content itself
+        out
+    }
+
+    #[test]
+    fn a_title_id_is_read_from_the_filename() {
+        let dir = scratch("named");
+        fs::write(dir.join("Bad North [0100C1F0051B4000][v0].nsp"), b"not a real nsp").unwrap();
+        assert_eq!(
+            detect_switch_title_id(dir.to_string_lossy().to_string()),
+            Some("0100C1F0051B4000".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_title_id_is_read_from_the_tickets_inside_an_nsp() {
+        let dir = scratch("ticket");
+        // No id in the name at all, so the archive is the only source.
+        fs::write(
+            dir.join("game.nsp"),
+            pfs0(&[
+                "0100c1f0051b4000000000000000000b.tik",
+                "0100c1f0051b4000000000000000000b.cert",
+                "a7f3c9d2e1b04856f0a1b2c3d4e5f607.nca",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            detect_switch_title_id(dir.to_string_lossy().to_string()),
+            Some("0100C1F0051B4000".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_update_resolves_to_the_base_game_saves_are_filed_under() {
+        let dir = scratch("update");
+        fs::write(dir.join("Dorfromantik [0100C1F0051B4800][v65536].nsp"), b"x").unwrap();
+        assert_eq!(
+            detect_switch_title_id(dir.to_string_lossy().to_string()),
+            Some("0100C1F0051B4000".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_of_base_update_and_dlc_resolves_to_the_base() {
+        let dir = scratch("bundle");
+        fs::write(dir.join("Inmost [0100C1F0051B4000].nsp"), b"x").unwrap();
+        fs::write(dir.join("Inmost update [0100C1F0051B4800].nsp"), b"x").unwrap();
+        fs::write(dir.join("Inmost DLC [0100C1F0051B5000].nsp"), b"x").unwrap();
+        assert_eq!(
+            detect_switch_title_id(dir.to_string_lossy().to_string()),
+            Some("0100C1F0051B4000".to_string())
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_content_hash_is_not_mistaken_for_a_title_id() {
+        // 32 hex digits, whose first half looks exactly like an id.
+        assert!(title_ids_in_text("0100c1f0051b4000a1b2c3d4e5f60718.nca").is_empty());
+        // And a run of the right length that isn't a program id.
+        assert!(title_ids_in_text("deadbeefdeadbeef.nsp").is_empty());
+    }
+
+    #[test]
+    fn a_folder_with_nothing_identifying_yields_nothing() {
+        let dir = scratch("anonymous");
+        fs::write(dir.join("Moonscars.nsp"), b"definitely not a pfs0").unwrap();
+        assert_eq!(detect_switch_title_id(dir.to_string_lossy().to_string()), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_archive_header_is_refused_rather_than_trusted() {
+        let dir = scratch("corrupt");
+        let mut bad = Vec::from(*b"PFS0");
+        bad.extend_from_slice(&u32::MAX.to_le_bytes()); // absurd file count
+        bad.extend_from_slice(&u32::MAX.to_le_bytes()); // absurd string table
+        bad.extend_from_slice(&0u32.to_le_bytes());
+        fs::write(dir.join("evil.nsp"), bad).unwrap();
+        // No panic, no vast allocation, just no answer.
+        assert_eq!(detect_switch_title_id(dir.to_string_lossy().to_string()), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
