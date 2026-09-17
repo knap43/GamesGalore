@@ -120,7 +120,7 @@ pub fn get_install_states(app: AppHandle) -> InstallMap {
 /// clean up a download whose owning install_game call isn't running
 /// anymore at all — e.g. the app was closed mid-download and relaunched
 /// — since there's no live task left to ask, only the id and settings.
-fn install_dir_for(install_root: &str, game_id: &str) -> Option<PathBuf> {
+pub fn install_dir_for(install_root: &str, game_id: &str) -> Option<PathBuf> {
     let (platform, title) = game_id.split_once('/')?;
     Some(Path::new(install_root).join(platform).join(title))
 }

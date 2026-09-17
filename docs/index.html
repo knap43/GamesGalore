@@ -796,6 +796,11 @@
     white-space: nowrap;
   }
 
+  /* One strip under the Play row carries both bad news and good: an
+     install failing, and a save syncing. They can't co-occur — a game
+     can't be installing and running — so they share the element and
+     differ only in colour. Red is the default because that's the older
+     use; .is-good re-tints it for anything that went right. */
   .install-error {
     padding: 10px 14px;
     border-radius: 8px;
@@ -806,6 +811,20 @@
     line-height: 1.5;
     margin-bottom: 18px;
     word-break: break-word;
+    /* Sized to the message rather than the column. "Save uploaded."
+       stretched across the whole detail view read as a banner, which
+       is far more weight than a two-word confirmation deserves. Still
+       a block, because display is toggled inline by the JS and would
+       override anything set here; fit-content shrinks it without that
+       fight. The cap keeps a long install failure readable rather than
+       letting it run the full width of a wide window. */
+    width: fit-content;
+    max-width: min(100%, 720px);
+  }
+  .install-error.is-good {
+    background: rgba(63,217,155,0.1);
+    border-color: rgba(63,217,155,0.28);
+    color: #7fe8bd;
   }
 
   .viewer {
@@ -1072,15 +1091,15 @@
         <label class="setting-label" for="switch-data-dir-input">Switch save location</label>
         <div class="setting-desc">
           The emulator's own data directory — saves live under <code>nand/user/save</code> inside
-          it. Each game also needs its Title ID, which is how the emulator files saves; play a
-          game once, then pick its ID below. IDs that already have save data are offered.
+          it. Found automatically where possible. Each game is identified from its own installed
+          files, or learned the first time you play it, so there is nothing to look up.
         </div>
         <div class="setting-input-row">
           <input class="setting-input" id="switch-data-dir-input" type="text"
-                 placeholder="/home/you/.local/share/eden" autocomplete="off">
+                 placeholder="Looking for it…" autocomplete="off">
           <button class="browse-button" id="browse-switch-data-dir" type="button">Browse…</button>
         </div>
-        <div id="title-id-rows"></div>
+        <div class="setting-desc" id="switch-saves-status" style="margin-top:10px;"></div>
       </div>
 
       <div class="setting-block">
@@ -1769,7 +1788,7 @@ async function syncBeforeLaunch(game) {
       // Refuse to launch: opening the game now would overwrite the
       // newer remote save with this machine's older one, which is the
       // exact outcome this feature exists to prevent.
-      setSaveNote(game, `Could not restore the save: ${err}`);
+      setSaveNote(game, `Could not restore the save: ${err}`, false);
       return false;
     }
   }
@@ -1796,7 +1815,92 @@ async function syncAfterExit(gameId) {
 
 function setupGameExitListener() {
   if (!TAURI) return;
-  TAURI.event.listen('game:exited', (event) => syncAfterExit(event.payload));
+  TAURI.event.listen('game:exited', async (event) => {
+    // Learning first: a game identified by this session can then be
+    // synced by the upload that follows, rather than waiting a run.
+    await learnTitleIdFromSession(event.payload);
+    syncAfterExit(event.payload);
+  });
+}
+
+/* Fills in the emulator's data directory without anyone typing a path.
+   Only ever fills a blank — a directory someone chose themselves is
+   never second-guessed. */
+async function findSwitchDataDir() {
+  if (!TAURI || state.saveSync.switch_data_dir) return;
+  try {
+    const found = await TAURI.core.invoke('detect_switch_data_dir');
+    if (!found) return;
+    state.saveSync.switch_data_dir = found;
+    document.getElementById('switch-data-dir-input').value = found;
+    persistSettings();
+  } catch (err) {
+    console.error('failed to look for the emulator data directory', err);
+  }
+}
+
+/* ---------------------------------------------------------------
+ * IDENTIFYING A SWITCH GAME
+ * ---------------------------------------------------------------
+ * A game's saves are filed under its Title ID, which has nothing to do
+ * with its name. The backend reads that id out of the game's own
+ * installed files, which covers most titles. For the rest there's this:
+ * note which save directories exist before a game runs, look again
+ * after it exits, and whichever one appeared is that game's.
+ *
+ * It costs nothing — the snapshot is a directory listing — and it needs
+ * no knowledge of file formats, naming conventions or key files. A
+ * game has to be played once, which is exactly the point at which it
+ * first has a save worth syncing anyway.
+ * --------------------------------------------------------------- */
+const titleIdSnapshots = new Map(); // game id -> ids present before launch
+
+function needsTitleId(game) {
+  return game.platform === 'Switch'
+    && !state.saveSync.title_ids[game.id]
+    && !!state.saveSync.switch_data_dir;
+}
+
+async function snapshotTitleIds(game) {
+  if (!TAURI || !needsTitleId(game)) return;
+  try {
+    titleIdSnapshots.set(game.id, await TAURI.core.invoke('list_switch_title_ids', {
+      switchDataDir: state.saveSync.switch_data_dir,
+    }));
+  } catch (err) {
+    console.error('failed to snapshot title ids', err);
+  }
+}
+
+async function learnTitleIdFromSession(gameId) {
+  const game = GAMES.find(g => g.id === gameId);
+  const before = titleIdSnapshots.get(gameId);
+  titleIdSnapshots.delete(gameId);
+  if (!TAURI || !game || !before || !needsTitleId(game)) return;
+
+  let after = [];
+  try {
+    after = await TAURI.core.invoke('list_switch_title_ids', {
+      switchDataDir: state.saveSync.switch_data_dir,
+    });
+  } catch (err) {
+    console.error('failed to re-read title ids', err);
+    return;
+  }
+
+  const appeared = after.filter(id => !before.includes(id));
+  // Exactly one, or none of it can be attributed with confidence —
+  // guessing wrong here would sync one game's saves under another's
+  // name, which is worse than leaving it unidentified.
+  if (appeared.length !== 1) return;
+
+  state.saveSync.title_ids[gameId] = appeared[0];
+  try {
+    await TAURI.core.invoke('set_switch_title_id', { gameId, titleId: appeared[0] });
+  } catch (err) {
+    console.error('failed to record the title id', err);
+  }
+  renderSwitchSavesStatus();
 }
 
 function confirmSaveChoice(game, status) {
@@ -1819,15 +1923,18 @@ function formatSaveMoment(epochSeconds) {
 
 /* Save messages share the install-error element rather than adding a
    second status line to the detail view — only one of the two can be
-   relevant at a time, since a game can't be installing and running. */
-function setSaveNote(game, message) {
+   relevant at a time, since a game can't be installing and running.
+   `good` re-tints it green: a save uploading is a success, and styling
+   it as an error was simply wrong. */
+function setSaveNote(game, message, good = true) {
   if (currentDetailId !== game.id) return;
   const el = document.getElementById('install-error');
   el.textContent = message;
+  el.classList.toggle('is-good', good);
   el.style.display = 'block';
 }
 
-async function launchGame(game) {
+function launchGame(game) {
   if (!TAURI) {
     // Browser-preview fallback: nothing can actually launch here, but a
     // silent no-op would read as a broken button to a demo visitor who
@@ -1917,7 +2024,7 @@ async function loadSettings() {
   document.getElementById('device-name-input').value = state.saveSync.device_name || '';
   document.getElementById('switch-data-dir-input').value = state.saveSync.switch_data_dir || '';
   updateSaveSyncUI();
-  renderTitleIdRows();
+  renderSwitchSavesStatus();
   document.getElementById('server-base-input').value = s.server_base;
   document.getElementById('install-root-input').value = s.install_root;
   updateSoundToggleUI();
@@ -2075,19 +2182,25 @@ function renderPlatformNav() {
   nav.innerHTML = '<div class="nav-label">Platforms</div>' + PLATFORM_ORDER
     .filter(p => counts[p])
     .map(platform => `
-      <div class="nav-item" data-type="platform" data-value="${platform}" tabindex="0" role="button">
+      <div class="nav-item${state.platforms.has(platform) ? ' active' : ''}" data-type="platform" data-value="${platform}" tabindex="0" role="button">
         <span class="nav-item-inner">${platform}</span>
         <span class="count">${counts[platform]}</span>
       </div>
     `).join('');
 }
 
+/* Both nav renderers take the highlight from state rather than leaving
+   it on the DOM. They rebuild their own innerHTML, and renderStatusNav
+   runs on every install-status change — so a class toggled onto the
+   element by the click handler was being wiped on the next render while
+   state.installedOnly stayed true, leaving the filter on with nothing
+   showing it. */
 function renderStatusNav() {
   const installedCount = GAMES.filter(g => g.installed).length;
   const nav = document.getElementById('status-nav');
   nav.innerHTML = `
     <div class="nav-label">Status</div>
-    <div class="nav-item" data-type="status" data-value="installed" tabindex="0" role="button">
+    <div class="nav-item${state.installedOnly ? ' active' : ''}" data-type="status" data-value="installed" tabindex="0" role="button">
       <span class="nav-item-inner">Installed</span>
       <span class="count">${installedCount}</span>
     </div>
@@ -2357,6 +2470,9 @@ function renderCtaRow(game) {
 
   errorEl.style.display = game.installError ? 'block' : 'none';
   errorEl.textContent = game.installError ? `Install failed: ${game.installError}` : '';
+  // Cleared explicitly: this strip is shared with save notices, and an
+  // install failure inheriting their green would read as a success.
+  if (game.installError) errorEl.classList.remove('is-good');
 
   // Nothing to launch means nothing to choose between. Handled here
   // rather than in renderLaunchPicker so the picker disappears the
@@ -2614,54 +2730,40 @@ function updateSaveSyncUI() {
   }
 }
 
-/* One row per installed Switch game, each offering the Title IDs that
-   actually have save data on this machine. Typing a 16-digit hex
-   string from memory is not a reasonable thing to ask, so the list is
-   read off the emulator's own directory. */
-function renderTitleIdRows() {
-  const container = document.getElementById('title-id-rows');
-  const games = GAMES.filter(g => g.platform === 'Switch' && g.installed);
+/* One line, not a row per game.
+ *
+ * This used to render a <select> of Title IDs for every installed
+ * Switch title, which was wrong three times over: it grew without
+ * bound as the library did, it used a native select that the OS draws
+ * and this stylesheet cannot touch, and it asked people to pick a
+ * 16-digit hex string out of a list of near-identical ones. Nobody
+ * knows their game's Title ID, and nobody should have to.
+ *
+ * Identification is automatic now — read from the game's own files, or
+ * learned by watching which save directory a session creates — so all
+ * that's left to report is whether it worked. */
+function renderSwitchSavesStatus() {
+  const el = document.getElementById('switch-saves-status');
+  if (!el) return;
 
-  if (!games.length) {
-    container.innerHTML = '<div class="setting-desc">No Switch games are installed yet.</div>';
+  if (!state.saveSync.switch_data_dir) {
+    el.textContent = 'No emulator data directory found yet — choose one above.';
     return;
   }
 
-  container.innerHTML = games.map(game => {
-    const mapped = state.saveSync.title_ids[game.id] || '';
-    const options = ['<option value="">Not mapped</option>']
-      .concat(switchTitleIds.map(id =>
-        `<option value="${escapeAttr(id)}"${id === mapped ? ' selected' : ''}>${escapeHTML(id)}</option>`))
-      // An id saved previously whose save directory has since gone is
-      // still shown, rather than silently reverting to "Not mapped".
-      .concat(mapped && !switchTitleIds.includes(mapped)
-        ? [`<option value="${escapeAttr(mapped)}" selected>${escapeHTML(mapped)} (no save data)</option>`]
-        : []);
-    return `
-      <div class="emulator-row">
-        <div class="emulator-row-header">
-          <span class="emulator-name">${escapeHTML(game.title)}</span>
-        </div>
-        <select class="setting-input title-id-select" data-game-id="${escapeAttr(game.id)}">
-          ${options.join('')}
-        </select>
-      </div>`;
-  }).join('');
-}
-
-let switchTitleIds = [];
-
-async function refreshSwitchTitleIds() {
-  switchTitleIds = [];
-  const dir = state.saveSync.switch_data_dir;
-  if (TAURI && dir) {
-    try {
-      switchTitleIds = await TAURI.core.invoke('list_switch_title_ids', { switchDataDir: dir });
-    } catch (err) {
-      console.error('failed to list title ids', err);
-    }
+  const games = GAMES.filter(g => g.platform === 'Switch' && g.installed);
+  if (!games.length) {
+    el.textContent = 'No Switch games are installed yet.';
+    return;
   }
-  renderTitleIdRows();
+
+  const identified = games.filter(g => state.saveSync.title_ids[g.id]).length;
+  if (identified === games.length) {
+    el.textContent = `All ${games.length} installed Switch games identified.`;
+    return;
+  }
+  el.textContent = `${identified} of ${games.length} installed Switch games identified. `
+    + 'The rest are worked out when you next play or sync them.';
 }
 
 document.getElementById('save-sync-toggle').addEventListener('click', () => {
@@ -2678,20 +2780,11 @@ document.getElementById('device-name-input').addEventListener('change', (e) => {
 document.getElementById('switch-data-dir-input').addEventListener('change', (e) => {
   state.saveSync.switch_data_dir = e.target.value.trim();
   persistSettings();
-  refreshSwitchTitleIds();
+  renderSwitchSavesStatus();
 });
 
 document.getElementById('prefix-root-input').addEventListener('change', (e) => {
   state.prefixRoot = e.target.value.trim();
-  persistSettings();
-});
-
-document.getElementById('title-id-rows').addEventListener('change', (e) => {
-  const select = e.target.closest('.title-id-select');
-  if (!select) return;
-  const gameId = select.dataset.gameId;
-  if (select.value) state.saveSync.title_ids[gameId] = select.value;
-  else delete state.saveSync.title_ids[gameId];
   persistSettings();
 });
 
@@ -2733,7 +2826,7 @@ async function browseForSwitchDataDir() {
   state.saveSync.switch_data_dir = selected;
   document.getElementById('switch-data-dir-input').value = selected;
   persistSettings();
-  refreshSwitchTitleIds();
+  renderSwitchSavesStatus();
 }
 
 async function browseForPrefixRoot() {
@@ -3230,9 +3323,15 @@ async function init() {
   await loadGames();
   isLoading = false;
 
-  // Needs both: the settings supply the emulator directory to scan, and
-  // the catalog supplies the installed Switch games to offer rows for.
-  refreshSwitchTitleIds();
+  // Start on the installed games: that's the shelf you actually play
+  // from, and on a 500-title library everything else is noise until
+  // you go looking for it. Skipped when nothing is installed yet,
+  // since filtering an empty result would show a new user an empty
+  // grid and no hint that their library is fine.
+  state.installedOnly = GAMES.some(g => g.installed);
+
+  await findSwitchDataDir();
+  renderSwitchSavesStatus();
 
   renderPlatformNav();
   renderStatusNav();
