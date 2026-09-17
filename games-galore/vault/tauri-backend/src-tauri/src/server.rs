@@ -8,6 +8,7 @@
 // work (scanning the folder tree, deciding what needs NSZ conversion).
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GameFile {
@@ -33,13 +34,21 @@ pub struct Game {
 }
 
 #[tauri::command]
-pub async fn fetch_library(server_base: String) -> Result<Vec<Game>, String> {
+pub async fn fetch_library(app: AppHandle, server_base: String) -> Result<Vec<Game>, String> {
     let url = format!("{}/library", server_base.trim_end_matches('/'));
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!("server returned {} fetching {}", response.status(), url));
     }
-    response.json::<Vec<Game>>().await.map_err(|e| e.to_string())
+    let games = response.json::<Vec<Game>>().await.map_err(|e| e.to_string())?;
+
+    // Keeps the installed titles' cached entries current — names,
+    // covers and blurbs change on the server side, and this is the
+    // only moment the client ever hears about it. Best-effort inside;
+    // a cache that can't be written doesn't spoil a good fetch.
+    crate::catalog_cache::sync(&app, &games);
+
+    Ok(games)
 }
 
 /// Surfaces the server's own `nsz` check in the client UI — e.g. to

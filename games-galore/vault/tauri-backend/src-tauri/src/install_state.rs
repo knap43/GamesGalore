@@ -114,6 +114,17 @@ pub fn get_install_states(app: AppHandle) -> InstallMap {
     load_states(&app)
 }
 
+/// The ids currently on disk, for the catalog cache to scope itself
+/// to. Reads the same installs.json everything else here does, so the
+/// two files can never disagree about what is installed.
+pub fn installed_ids(app: &AppHandle) -> HashSet<String> {
+    load_states(app)
+        .into_iter()
+        .filter(|(_, status)| matches!(status, InstallStatus::Installed { .. }))
+        .map(|(id, _)| id)
+        .collect()
+}
+
 /// Reconstructs where a game's files would live on disk from its id and
 /// the configured install root, without needing that path to have been
 /// stored anywhere first. This is what makes cancel_install able to
@@ -178,6 +189,10 @@ pub async fn install_game(
     }
 
     set_status(&app, &game.id, InstallStatus::Installed { local_dir: dest_dir })?;
+    // Now that this title is on disk, its catalog entry belongs in the
+    // startup cache — it should be on the shelf at next launch whether
+    // or not the library server answers.
+    crate::catalog_cache::remember(&app, &game);
     Ok(())
 }
 
@@ -292,6 +307,7 @@ pub fn uninstall_game(app: AppHandle, game_id: String) -> Result<(), String> {
             std::fs::remove_dir_all(local_dir).map_err(|e| e.to_string())?;
         }
     }
+    crate::catalog_cache::forget(&app, &game_id);
     set_status(&app, &game_id, InstallStatus::NotInstalled)
 }
 
@@ -318,6 +334,7 @@ pub fn cancel_install(
         }
     }
 
+    crate::catalog_cache::forget(&app, &game_id);
     set_status(&app, &game_id, InstallStatus::NotInstalled)
 }
 
