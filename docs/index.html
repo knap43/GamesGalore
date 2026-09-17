@@ -1187,7 +1187,6 @@
 
       <div class="cta-row">
         <button class="cta-button" id="cta-button"></button>
-        <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
         <div class="launch-picker" id="launch-picker">
           <span class="launch-label" id="launch-label">Launch</span>
           <div class="launch-dropdown">
@@ -1199,6 +1198,7 @@
             <div class="launch-menu" id="launch-menu" role="listbox" aria-label="Which file to launch" hidden></div>
           </div>
         </div>
+        <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
         <span class="game-size" id="game-size"></span>
       </div>
 
@@ -3158,27 +3158,28 @@ function moveDirection(dir) {
     return;
   }
 
-  // Play -> Uninstall -> launch picker, skipping whichever of the two
-  // isn't currently on screen, so the chain has no dead steps.
+  // Play -> launch picker -> Uninstall, matching the visual order and
+  // skipping whichever of the last two isn't on screen, so the chain
+  // has no dead steps.
   if (active.id === 'cta-button') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button', 'launch-trigger'));
-    return;
-  }
-
-  if (active.id === 'uninstall-button') {
-    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
-    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-trigger'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-trigger', 'uninstall-button'));
     return;
   }
 
   if (active.id === 'launch-trigger') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'left') focusNoScroll(nextCtaTarget('uninstall-button', 'cta-button'));
+    else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button'));
+    return;
+  }
+
+  if (active.id === 'uninstall-button') {
+    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
+    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
+    else if (dir === 'left') focusNoScroll(nextCtaTarget('launch-trigger', 'cta-button'));
     return;
   }
 
