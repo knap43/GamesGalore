@@ -13,6 +13,7 @@ are listed at the bottom of each subproject's README.
 | `app/` | The desktop client — a Tauri app around a single-file HTML/CSS/JS frontend, plus its Rust backend and test suites. |
 | `server/` | The Python library server that scans the drive and serves the catalog, the game files and the cloud saves. |
 | `docs/` | The GitHub Pages demo: the app's frontend, generated with its Tauri calls stubbed out. |
+| `packaging/` | A `PKGBUILD` and desktop entry, for installing the client as an Arch package. |
 
 ### Demo:
 https://knap43.github.io/GamesGalore/

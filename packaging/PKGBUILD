@@ -1,0 +1,103 @@
+# Maintainer: knap43 <https://github.com/knap43>
+#
+# Builds the desktop client as a real Arch package: pacman owns the
+# files, the launcher appears in the applications menu, and the runtime
+# dependencies are declared rather than assumed.
+#
+#   cd packaging && makepkg -si
+#
+# This is the -git flavour: it builds whatever is on the repository's
+# default branch. To build a local checkout instead — your own working
+# tree, unpushed — change the source line to point at it:
+#
+#   source=("$_pkgname::git+file:///home/you/GamesGalore")
+#
+# Note that git+file:// still builds committed work, not uncommitted
+# changes; `makepkg` clones what it is given.
+#
+# Deliberately not `cargo tauri build`. That runs the bundler, which
+# downloads linuxdeploy and needs libfuse.so.2 to run it — on Arch that
+# means installing `fuse2` alongside the fuse3 the system already has,
+# and it is the usual reason an AppImage build stops after producing
+# the binary. A package doesn't need any of that: `tauri::generate_context!`
+# embeds the frontend into the binary at compile time, so the one file
+# installed below is the whole application.
+
+pkgname=games-galore-git
+_pkgname=games-galore
+pkgver=0.1.0.r0.0000000
+pkgrel=1
+pkgdesc="Game library front-end for a self-hosted library server"
+arch=('x86_64')
+url="https://github.com/knap43/GamesGalore"
+license=('MIT')
+# webkit2gtk-4.1 is what Tauri v2 renders in; the rest come with it on
+# most systems but are named here so a minimal install still works.
+depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'libsoup3')
+makedepends=('git' 'rust' 'cargo' 'pkgconf')
+optdepends=(
+  'wine: running PC titles'
+  'duckstation: PlayStation titles'
+  'pcsx2: PlayStation 2 titles'
+  'python: running the library server on this machine too'
+)
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+source=("$_pkgname::git+https://github.com/knap43/GamesGalore.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$_pkgname"
+  # The version the app reports, plus how far past it this checkout is.
+  local version
+  version=$(grep -m1 '"version"' app/src-tauri/tauri.conf.json | cut -d'"' -f4)
+  printf "%s.r%s.%s" "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$srcdir/$_pkgname/app/src-tauri"
+  # Vendoring up front means the build itself needs no network, which
+  # is what `makepkg` expects of it.
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$srcdir/$_pkgname/app/src-tauri"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$srcdir/$_pkgname/app/src-tauri"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$srcdir/$_pkgname"
+
+  install -Dm755 "app/src-tauri/target/release/$_pkgname" \
+    "$pkgdir/usr/bin/$_pkgname"
+
+  install -Dm644 "packaging/$_pkgname.desktop" \
+    "$pkgdir/usr/share/applications/$_pkgname.desktop"
+
+  # The icon set the app already ships, filed where the desktop entry
+  # can find it by name.
+  local size
+  for size in 32x32 64x64 128x128; do
+    install -Dm644 "app/src-tauri/icons/$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/$size/apps/$_pkgname.png"
+  done
+  install -Dm644 "app/src-tauri/icons/128x128@2x.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/$_pkgname.png"
+  install -Dm644 "app/src-tauri/icons/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/$_pkgname.png"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 app/README.md "$pkgdir/usr/share/doc/$pkgname/app.md"
+  install -Dm644 server/README.md "$pkgdir/usr/share/doc/$pkgname/server.md"
+}

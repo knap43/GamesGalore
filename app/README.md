@@ -601,6 +601,41 @@ override that setting on the command line rather than editing it:
 cargo tauri build --bundles deb,appimage
 ```
 
+### Installing it as an Arch package
+
+`packaging/PKGBUILD` builds the client the way Arch expects one: pacman owns the
+files, the launcher appears in the applications menu with its icon, and the
+runtime dependencies are declared rather than assumed.
+
+```
+cd packaging
+makepkg -si            # add --nocheck to skip the test suite, which is a
+                       # second full compile in release mode
+```
+
+It is the `-git` flavour — it builds the repository's default branch. To build a
+local checkout instead, point the `source` line at it:
+
+```
+source=("$_pkgname::git+file:///home/you/GamesGalore")
+```
+
+Note that even then `makepkg` clones what it is given, so uncommitted work is
+not included.
+
+Deliberately **not** `cargo tauri build`. That runs the bundler, which downloads
+`linuxdeploy` and needs `libfuse.so.2` to run it — on Arch that means installing
+`fuse2` alongside the `fuse3` the system already ships, and it is the usual
+reason an AppImage build stops after producing the binary. A package needs none
+of it: `tauri::generate_context!` embeds the frontend into the binary at compile
+time, so `cargo build --release` produces the entire application as one file.
+
+The binary alone is *not* an AppImage, and renaming it to `.AppImage` only
+changes its name. An AppImage is a SquashFS image with a runtime prepended and
+the libraries bundled inside; this binary is an ordinary dynamically-linked ELF
+that needs `webkit2gtk-4.1` present on the system — which is exactly what the
+package declares.
+
 ### Cutting a release
 
 Bump `version` in `tauri.conf.json` (and `Cargo.toml`, which should match), then:

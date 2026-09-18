@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Games Galore
+Comment=Game library front-end for a self-hosted library server
+Exec=games-galore
+Icon=games-galore
+Terminal=false
+Categories=Game;
+Keywords=games;library;emulator;
+StartupWMClass=Games Galore
