@@ -826,6 +826,59 @@
      can't be installing and running — so they share the element and
      differ only in colour. Red is the default because that's the older
      use; .is-good re-tints it for anything that went right. */
+  /* The catalog fetch failing is not an error in the sense the install
+     notice is — the app still works, on a smaller shelf — so this is
+     stated in the app's own muted register rather than in alarm red. */
+  .server-notice {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 11px 14px;
+    margin-bottom: 22px;
+    border-radius: 8px;
+    background: var(--bg-panel-alt);
+    border: 1px solid var(--border-hair-2);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--text-muted);
+    /* Capped rather than full-bleed: a sentence and a button don't
+       need the width of a wide window, and a banner that runs edge to
+       edge reads as an alarm, which this isn't. */
+    max-width: min(100%, 760px);
+  }
+  .server-notice-dot {
+    width: 7px;
+    height: 7px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: #e8a33d;
+  }
+  .server-notice-text { flex: 1; min-width: 0; }
+  .server-notice-text strong { color: var(--text-primary); font-weight: 500; }
+  .server-notice-text .where {
+    color: var(--text-faint);
+    word-break: break-all;
+  }
+  .server-notice-retry {
+    flex-shrink: 0;
+    padding: 6px 14px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-hair-2);
+    background: transparent;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .server-notice-retry:hover:not(:disabled),
+  .server-notice-retry:focus-visible {
+    color: var(--text-primary);
+    border-color: var(--accent-pink);
+    outline: none;
+  }
+  .server-notice-retry:disabled { opacity: 0.5; cursor: default; }
+
   .install-error {
     padding: 10px 14px;
     border-radius: 8px;
@@ -1192,6 +1245,8 @@
         </div>
       </div>
 
+      <div class="server-notice" id="server-notice" style="display:none"></div>
+
       <div class="grid" id="grid"></div>
     </div>
 
@@ -1317,6 +1372,9 @@ let isLoading = true; // true until loadGames() resolves, so the empty
                        // grid reads as "loading", not "no matches"
 let isRefreshing = false; // true while the cached shelf is on screen and the
                           // full catalog is still being fetched behind it
+let libraryUnreachable = false; // set when the catalog fetch fails, so the
+                                // shelf on screen is visibly a fallback rather
+                                // than silently a stale one
 let installedFilterTouched = false; // set the moment the user works the
                                     // Installed filter themselves, so the
                                     // startup default stops overriding them
@@ -1475,6 +1533,7 @@ async function loadGames() {
     // makes the app useless offline. With no cache it's empty already.
     console.error('failed to fetch library', err);
   }
+  libraryUnreachable = !live;
   if (live) GAMES = live;
 
   await hydrateInstallStatus();
@@ -2302,7 +2361,59 @@ function renderSidebarFooter() {
     `<strong>${installedCount} of ${GAMES.length} titles</strong> installed locally${refreshing}`;
 }
 
-/* ---------------------------------------------------------------
+/* Says out loud what the cache would otherwise hide. Without this, a
+   shelf drawn from the cache and a shelf drawn from a live catalog look
+   identical, and "where did the rest of my library go?" has no answer
+   on screen. */
+function renderServerNotice() {
+  const el = document.getElementById('server-notice');
+  if (!libraryUnreachable) {
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+
+  const where = state.serverBase
+    ? `<span class="where">${state.serverBase}</span>`
+    : 'no server address is set';
+  const installedCount = GAMES.filter(g => g.installed).length;
+  const scope = installedCount
+    ? 'Showing the titles already installed on this machine.'
+    : 'Nothing is installed locally, so there is nothing to show until it answers.';
+
+  el.innerHTML = `
+    <span class="server-notice-dot"></span>
+    <span class="server-notice-text">
+      <strong>Can't reach the library server</strong> — ${where}. ${scope}
+    </span>
+    <button class="server-notice-retry" id="server-notice-retry" tabindex="0">Retry</button>
+  `;
+  el.style.display = 'flex';
+}
+
+async function retryLibrary() {
+  const button = document.getElementById('server-notice-retry');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Retrying…';
+  }
+
+  await loadGames();
+  renderShell();
+
+  // Nothing installed and still no server: the grid is empty and the
+  // notice says why, which is all there is to say.
+  if (!libraryUnreachable) focusNoScroll(document.getElementById('search'));
+}
+
+function renderSidebarFooter() {
+  const installedCount = GAMES.filter(g => g.installed).length;
+  const refreshing = isRefreshing
+    ? '<span class="sidebar-refresh">Loading the rest of your library…</span>'
+    : '';
+  document.getElementById('sidebar-footer').innerHTML =
+    `<strong>${installedCount} of ${GAMES.length} titles</strong> installed locally${refreshing}`;
+}/* ---------------------------------------------------------------
  * RENDER: GRID
  * --------------------------------------------------------------- */
 function getFilteredSortedGames() {
@@ -2391,6 +2502,12 @@ function renderGrid(resetScroll = false) {
       <div class="empty-state">
         <strong>Loading your library…</strong>
         Fetching the catalog from the server.
+      </div>`
+      : libraryUnreachable && GAMES.length === 0
+      ? `
+      <div class="empty-state">
+        <strong>No catalog</strong>
+        The library server didn't answer, and nothing is installed here yet.
       </div>`
       : `
       <div class="empty-state">
@@ -2663,6 +2780,11 @@ function renderViewerMedia(game) {
  * EVENTS
  * --------------------------------------------------------------- */
 document.addEventListener('click', (e) => {
+  if (e.target.closest('#server-notice-retry')) {
+    retryLibrary();
+    return;
+  }
+
   const navItem = e.target.closest('.nav-item');
   if (navItem) {
     const { type, value } = navItem.dataset;
@@ -3409,6 +3531,7 @@ function renderShell() {
   renderPlatformNav();
   renderStatusNav();
   renderSidebarFooter();
+  renderServerNotice();
   renderGrid();
 }
 

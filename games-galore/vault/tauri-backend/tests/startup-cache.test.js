@@ -24,8 +24,9 @@ const INSTALLED = {
 };
 
 async function boot({ cached = CACHED, libraryDelay = 600, libraryFails = false,
-                      installStates = INSTALLED } = {}) {
+                      installStates = INSTALLED, recoverAfter = Infinity } = {}) {
   const calls = [];
+  let fetches = 0;
   const settings = {
     server_base: 'http://x:8420', install_root: '/games', sound_enabled: true,
     emulators: {}, launch_overrides: {},
@@ -38,8 +39,9 @@ async function boot({ cached = CACHED, libraryDelay = 600, libraryFails = false,
       case 'get_settings': return settings;
       case 'get_cached_library': return cached;
       case 'fetch_library':
+        fetches++;
         await sleep(libraryDelay);
-        if (libraryFails) throw new Error('connection refused');
+        if (libraryFails && fetches <= recoverAfter) throw new Error('connection refused');
         return LIVE.map(g => ({ ...g }));
       case 'get_install_states': return installStates;
       case 'detect_switch_data_dir': return null;
@@ -83,6 +85,8 @@ const footer = doc => doc.getElementById('sidebar-footer').textContent;
     check('the refresh hint is gone once the catalog is in',
           footer(doc).includes('Loading the rest of your library'), false);
     check('the footer counts the whole catalog', footer(doc).includes('2 of 5 titles'), true);
+    check('a healthy server shows no notice at all',
+          doc.getElementById('server-notice').style.display, 'none');
     check('no uncaught errors', errors, []);
   }
 
@@ -95,7 +99,52 @@ const footer = doc => doc.getElementById('sidebar-footer').textContent;
           titles(doc), ['Bramblewood', 'Hollow Meridian']);
     check('and are still counted as installed',
           footer(doc).includes('2 of 2 titles'), true);
+
+    // The whole point of the notice: a cached shelf and a live one look
+    // identical, so the difference has to be stated somewhere.
+    const notice = doc.getElementById('server-notice');
+    check('the failure is visible rather than console-only',
+          notice.style.display, 'flex');
+    check('...and names the server that did not answer',
+          notice.textContent.includes('http://x:8420'), true);
+    check('...and says what is on screen instead',
+          notice.textContent.includes('already installed'), true);
     check('no uncaught errors on a failed fetch', errors, []);
+  }
+
+  // === retrying, and succeeding ======================================
+  {
+    const { doc, calls, errors } = await boot({
+      libraryDelay: 200, libraryFails: true, recoverAfter: 1,
+    });
+    await sleep(500);
+    check('the notice offers a retry', !!doc.getElementById('server-notice-retry'), true);
+
+    doc.getElementById('server-notice-retry').click();
+    await sleep(80); // mid-flight: the fetch takes 200ms
+    check('the button says so while it works',
+          doc.getElementById('server-notice-retry').textContent, 'Retrying…');
+
+    await sleep(500);
+    check('a second fetch was made',
+          calls.filter(c => c === 'fetch_library').length, 2);
+    check('the notice clears once the server answers',
+          doc.getElementById('server-notice').style.display, 'none');
+    check('and the full catalog is in', doc.getElementById('total-count').textContent, '5');
+    check('no uncaught errors around the retry', errors, []);
+  }
+
+  // === no cache and no server: the grid explains itself ==============
+  {
+    const { doc, errors } = await boot({ cached: [], libraryDelay: 50, libraryFails: true });
+    await sleep(500);
+
+    const empty = doc.querySelector('.empty-state');
+    check('an empty grid blames the server, not the filter',
+          empty && empty.textContent.includes('No catalog'), true);
+    check('and the notice says nothing is installed either',
+          doc.getElementById('server-notice').textContent.includes('Nothing is installed'), true);
+    check('no uncaught errors with neither cache nor server', errors, []);
   }
 
   // === no cache: the old behaviour, unchanged ========================
