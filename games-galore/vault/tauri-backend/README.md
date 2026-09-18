@@ -298,7 +298,12 @@ showing both timestamps and which machine the remote came from. If a restore
 fails, the launch is blocked rather than allowed to proceed — opening the game
 would overwrite the newer save with the older one, which is the exact outcome
 the feature exists to prevent. Restoring always moves the existing local save
-aside as a `.bak-<timestamp>` directory rather than deleting it.
+aside as a `.bak-<timestamp>` directory rather than deleting it, and keeps the
+three most recent of those. They were originally kept forever, on the reasoning
+that a save costs kilobytes — true of a console save and not at all of a PC
+prefix's user directory, which can be hundreds of megabytes and gets another
+copy every restore. Three still covers what the backups are for, which is
+noticing within a session or two that the wrong version came down.
 
 The server keeps the last ten versions per game and ignores a re-upload whose
 contents are identical, so quitting a game without playing doesn't push real

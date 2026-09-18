@@ -140,6 +140,15 @@ mix (one `.nsp`, two `.nsz`):
 every later download of that same file is served straight from the cache — no
 repeat decompression. The source library folder is never written to.
 
+The cache is swept back under `CACHE_MAX_BYTES` after each conversion, least
+recently used first. A decompressed `.nsp` is roughly twice the `.nsz` it came
+from, so a library browsed for long enough would otherwise fill whatever disk
+the server runs on. "Least recently used" reads atime where the filesystem keeps
+one — a file served to a client was read, which is exactly the signal wanted —
+and falls back to mtime, since a `noatime` mount reports a stale atime rather
+than none at all. Evicting too eagerly costs only CPU on the next download of
+that title, which is why the cap can be set as low as the disk requires.
+
 ## Path safety
 
 `filename` and `game_id` come straight from the URL, so `_safe_join` rejects
@@ -183,8 +192,6 @@ question of where saves live on a given machine stays on the client side.
   large PC library makes installs feel slow: a cached catalog with a manual
   rescan trigger, and an endpoint that streams a whole title as one archive
   instead of a request per file.
-- **Nothing prunes `CACHE_DIR`.** Converted `.nsp` files accumulate there
-  indefinitely; there's no size cap and no eviction.
 - **The catalog is only populated by `/library`.** `_reload_catalog()` runs at
   startup and on each `/library` call; `/media` and `/download` both look games
   up in it. That holds under `python server.py`, but a deployment that imports

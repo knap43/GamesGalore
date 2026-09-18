@@ -823,9 +823,21 @@ fn extract_archive(bytes: &[u8], dest: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Moves current save data to a sibling `.bak-<timestamp>` directory.
-/// Kept local and kept forever: it costs kilobytes, and the moment it
-/// matters is the moment someone restored the wrong version.
+/// How many `.bak-` copies of a given save directory to keep.
+///
+/// Originally these were kept forever, on the reasoning that they cost
+/// kilobytes. That holds for a console save and not at all for a PC
+/// prefix's user directory, which can be hundreds of megabytes and gets
+/// another copy every single restore — an unbounded pile in a directory
+/// nobody looks at. Three still covers what the backups are for, which
+/// is noticing within a session or two that the wrong version came
+/// down.
+const SAVE_BACKUPS_KEPT: usize = 3;
+
+/// Moves current save data to a sibling `.bak-<timestamp>` directory,
+/// then prunes the older ones. The moment a backup matters is the
+/// moment someone restored the wrong version, which is why this
+/// happens at all.
 fn back_up_existing(source: &SaveSource) -> Result<(), String> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -839,8 +851,54 @@ fn back_up_existing(source: &SaveSource) -> Result<(), String> {
         let mut backup = full.clone();
         backup.as_mut_os_string().push(format!(".bak-{stamp}"));
         fs::rename(&full, &backup).map_err(|e| format!("backing up {}: {e}", full.display()))?;
+        prune_backups(&full, SAVE_BACKUPS_KEPT);
     }
     Ok(())
+}
+
+/// Deletes all but the newest `keep` backups of one save directory.
+///
+/// Sorted by the timestamp in the name rather than by mtime: the name
+/// records when the backup was taken, while the mtime records when the
+/// filesystem last touched it, and a copy or a restore moves the
+/// second without moving the first.
+///
+/// Best-effort throughout. This runs immediately after a backup was
+/// successfully taken, and failing to tidy up older ones is not a
+/// reason to fail the restore that is now safe to perform.
+fn prune_backups(target: &Path, keep: usize) {
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let Some(name) = target.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let prefix = format!("{name}.bak-");
+
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    let mut backups: Vec<(u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let stamp = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_prefix(&prefix))
+                .and_then(|stamp| stamp.parse::<u64>().ok())?;
+            path.is_dir().then_some((stamp, path))
+        })
+        .collect();
+
+    if backups.len() <= keep {
+        return;
+    }
+
+    backups.sort_by(|a, b| b.0.cmp(&a.0)); // newest first
+    for (_, path) in backups.into_iter().skip(keep) {
+        let _ = fs::remove_dir_all(&path);
+    }
 }
 
 #[cfg(test)]
@@ -989,6 +1047,73 @@ mod tests {
         assert!(err.contains("unsafe path"), "unexpected error: {err}");
         assert!(!dest.parent().unwrap().join("escaped.txt").exists());
         fs::remove_dir_all(&dest).unwrap();
+    }
+
+    #[test]
+    fn only_the_newest_backups_of_a_save_are_kept() {
+        // A PC prefix's user directory is not kilobytes, and it gets
+        // another copy every restore. Left alone that is an unbounded
+        // pile in a directory nobody ever looks at.
+        let root = std::env::temp_dir().join("gg-prune-backups");
+        let _ = fs::remove_dir_all(&root);
+        let save = root.join("save");
+        fs::create_dir_all(&save).unwrap();
+
+        for stamp in [100u64, 200, 300, 400, 500] {
+            let dir = root.join(format!("save.bak-{stamp}"));
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("progress.dat"), stamp.to_string()).unwrap();
+        }
+        // Neither of these is a backup of this directory, and neither
+        // may be touched: one belongs to a different save, the other
+        // has a name that only looks like a timestamp.
+        fs::create_dir_all(root.join("other.bak-999")).unwrap();
+        fs::create_dir_all(root.join("save.bak-notanumber")).unwrap();
+
+        prune_backups(&save, 3);
+
+        let mut left: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        left.sort();
+        assert_eq!(
+            left,
+            vec![
+                "other.bak-999",
+                "save",
+                "save.bak-300",
+                "save.bak-400",
+                "save.bak-500",
+                "save.bak-notanumber",
+            ]
+        );
+
+        // The survivors are intact, not just present.
+        assert_eq!(
+            fs::read_to_string(root.join("save.bak-500").join("progress.dat")).unwrap(),
+            "500"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn pruning_leaves_a_handful_of_backups_alone() {
+        let root = std::env::temp_dir().join("gg-prune-backups-few");
+        let _ = fs::remove_dir_all(&root);
+        let save = root.join("save");
+        fs::create_dir_all(&save).unwrap();
+        for stamp in [10u64, 20] {
+            fs::create_dir_all(root.join(format!("save.bak-{stamp}"))).unwrap();
+        }
+
+        prune_backups(&save, 3);
+
+        assert!(root.join("save.bak-10").exists());
+        assert!(root.join("save.bak-20").exists());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
