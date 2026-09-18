@@ -36,10 +36,13 @@ async function boot(opts = {}) {
           files:[{filename:'base.nsp', size_bytes:1000}], screenshots:[], cover:null, trailer:null },
         { id:'PS1/Static Choir', title:'Static Choir', platform:'PS1', description:'d',
           files:[{filename:'sc.cue', size_bytes:300}], screenshots:[], cover:null, trailer:null },
+        { id:'PC/ULTRAKILL', title:'ULTRAKILL', platform:'PC', description:'d',
+          files:[{filename:'game.exe', size_bytes:900}], screenshots:[], cover:null, trailer:null },
       ];
       case 'get_install_states': return opts.nothingInstalled ? {} : {
         'Switch/198X': { status:'installed', local_dir:'/games/Switch/198X' },
         'PS1/Static Choir': { status:'installed', local_dir:'/games/PS1/Static Choir' },
+        'PC/ULTRAKILL': { status:'installed', local_dir:'/games/PC/ULTRAKILL' },
       };
       case 'list_launch_candidates': return [];
       case 'list_switch_title_ids':
@@ -52,7 +55,8 @@ async function boot(opts = {}) {
       case 'set_switch_title_id': return null;
       case 'save_status': return opts.status || { state:'in_sync', local_modified:100,
                                                   local_bytes:10, latest:null, unavailable:null,
-                                                  title_id: opts.resolvedId ?? null };
+                                                  title_id: opts.resolvedId ?? null,
+                                                  unsynced: opts.unsynced || [] };
       case 'download_save':
         if (opts.downloadFails) throw new Error('server unreachable');
         return null;
@@ -305,7 +309,7 @@ async function boot(opts = {}) {
   const statusItem = () => t.doc.querySelector('#status-nav .nav-item');
   check('the installed filter starts on', statusItem().classList.contains('active'), true);
   check('...and the grid is filtered to installed games',
-        t.doc.querySelectorAll('.card').length, 2);
+        t.doc.querySelectorAll('.card').length, 3);
   // It must survive the re-render that every install-status change causes.
   t.emit('game:exited', 'Switch/198X');
   await sleep(140);
@@ -319,7 +323,7 @@ async function boot(opts = {}) {
   check('with nothing installed the filter stays off',
         t.doc.querySelector('#status-nav .nav-item').classList.contains('active'), false);
   check('...so the whole library is still visible',
-        t.doc.querySelectorAll('.card').length, 2);
+        t.doc.querySelectorAll('.card').length, 3);
 
   // === an id the backend resolved is not re-derived every launch =====
   t = await boot({ titleIds: {}, resolvedId: '0100AAA000BBB000' });
@@ -330,6 +334,46 @@ async function boot(opts = {}) {
         t.settings.save_sync.title_ids['Switch/198X'] ?? 'not recorded', '0100AAA000BBB000');
   check('...so the launch does no session-watching work at all',
         t.calls.filter(c => c[0] === 'list_switch_title_ids').length, 0);
+
+  // === the save token =================================================
+  t = await boot();
+  t.doc.querySelector('.nav-item[data-type="settings"]').click();
+  await sleep(150);
+  const tokenInput = t.doc.getElementById('save-token-input');
+  check('the token field is on the settings screen', !!tokenInput, true);
+  check('...and is not shown in the clear', tokenInput.type, 'password');
+
+  tokenInput.value = 's3cret-token';
+  tokenInput.dispatchEvent(new t.win.Event('change'));
+  await sleep(150);
+  check('...and is persisted with the rest of the save settings',
+        t.settings.save_sync.token, 's3cret-token');
+
+  // === saves written outside the prefix ===============================
+  // Wine links a prefix's Documents out to the real home directory and
+  // the archive refuses to follow it, so a game saving there is left
+  // behind with nothing about the sync looking wrong.
+  t = await boot({ unsynced: ['Documents', 'Saved Games'] });
+  await openGame(t.doc, 'ULTRAKILL');
+  await sleep(200);
+  const prefixNote = t.doc.getElementById('install-error');
+  check('a prefix that links its save folders out says so', prefixNote.style.display, 'block');
+  check('...naming the folders', prefixNote.textContent.includes('Documents and Saved Games'), true);
+  check('...and the remedy', prefixNote.textContent.includes('winecfg'), true);
+  check('...in the neutral tone, not as a failure',
+        [prefixNote.classList.contains('is-info'), prefixNote.classList.contains('is-good')], [true, false]);
+
+  t = await boot();
+  await openGame(t.doc, 'ULTRAKILL');
+  await sleep(200);
+  check('a prefix that keeps its own folders says nothing',
+        t.doc.getElementById('install-error').style.display, 'none');
+
+  t = await boot({ unsynced: ['Documents'] });
+  await openGame(t.doc, '198X');
+  await sleep(200);
+  check('and a Switch game is never asked about prefixes at all',
+        t.doc.getElementById('install-error').style.display, 'none');
 
   finish();
 })();

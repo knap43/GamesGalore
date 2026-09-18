@@ -81,6 +81,11 @@ pub struct SaveStatus {
     /// believing a game is unidentified and redoes the session-watching
     /// work on every single launch.
     pub title_id: Option<String>,
+    /// Profile folders in a Wine prefix that link out of it, so
+    /// anything a game saves there is not in the archive. Empty for
+    /// every other platform, and for a prefix that keeps its own.
+    #[serde(default)]
+    pub unsynced: Vec<String>,
 }
 
 /// Where a game's saves live, and the root that paths inside the
@@ -480,6 +485,59 @@ fn collect_hex16_dirs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Profile folders a Windows game plausibly saves into. Wine's Desktop
+/// Integration links several more (Desktop, Downloads, Music, Pictures,
+/// Videos) out to the real home directory, but no game keeps its save
+/// in Pictures, and listing them would bury the two that matter.
+const PROFILE_SAVE_FOLDERS: [&str; 4] = ["Documents", "My Documents", "Saved Games", "AppData"];
+
+/// Names of the profile folders in this prefix that are symlinks
+/// pointing outside it.
+///
+/// This is the one hole in PC save sync, and until now it failed
+/// silently: Wine links `Documents` and friends out to the real home
+/// directory by default, the archive walk refuses to follow symlinks
+/// (rightly — see walk_save_files below), and so a game that saves to
+/// Documents has its save quietly left behind. Nothing is broken enough
+/// to fail on, and nothing about the save directory looks wrong.
+/// Reporting it is the only honest option; the alternative is a sync
+/// that works for most games and silently doesn't for the rest.
+///
+/// A dangling link is ignored — nothing can be saved through it, so
+/// warning about it would be noise. So is a link that stays inside the
+/// prefix, since the archive captures what that points at.
+fn unsynced_profile_links(prefix: &Path) -> Vec<String> {
+    let users = prefix.join("drive_c").join("users");
+    let Ok(profiles) = fs::read_dir(&users) else {
+        return Vec::new();
+    };
+    let inside = fs::canonicalize(prefix).unwrap_or_else(|_| prefix.to_path_buf());
+
+    let mut found: Vec<String> = Vec::new();
+    for profile in profiles.flatten() {
+        for name in PROFILE_SAVE_FOLDERS {
+            let candidate = profile.path().join(name);
+            let Ok(meta) = fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if !meta.file_type().is_symlink() {
+                continue;
+            }
+            // canonicalize resolves the link and every parent, and
+            // fails outright on a dangling one — exactly the case to
+            // skip.
+            let Ok(target) = fs::canonicalize(&candidate) else {
+                continue;
+            };
+            if !target.starts_with(&inside) && !found.iter().any(|n| n == name) {
+                found.push(name.to_string());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// How deep any save walk will go. Save data is a handful of levels at
 /// most; this is a backstop against a pathological tree rather than a
 /// real constraint.
@@ -552,12 +610,36 @@ fn saves_url(server_base: &str, game_id: &str) -> String {
     )
 }
 
-async fn fetch_versions(server_base: &str, game_id: &str) -> Result<Vec<SaveVersion>, String> {
+/// Every request to a save endpoint is built here, so the token is
+/// attached in exactly one place rather than three — and so a new call
+/// site cannot quietly forget it.
+///
+/// An empty token means the server isn't asking for one, which is its
+/// default; sending an empty `Bearer` header instead would be a header
+/// that can only ever be wrong.
+fn save_request(method: reqwest::Method, url: String, token: &str) -> reqwest::RequestBuilder {
+    let request = reqwest::Client::new().request(method, url);
+    match token.trim() {
+        "" => request,
+        token => request.bearer_auth(token),
+    }
+}
+
+fn save_token(app: &AppHandle) -> String {
+    get_settings(app.clone()).save_sync.token
+}
+
+async fn fetch_versions(
+    server_base: &str,
+    game_id: &str,
+    token: &str,
+) -> Result<Vec<SaveVersion>, String> {
     #[derive(Deserialize)]
     struct Listing {
         versions: Vec<SaveVersion>,
     }
-    let response = reqwest::get(saves_url(server_base, game_id))
+    let response = save_request(reqwest::Method::GET, saves_url(server_base, game_id), token)
+        .send()
         .await
         .map_err(|e| e.to_string())?;
     if !response.status().is_success() {
@@ -586,6 +668,7 @@ pub async fn save_status(
         latest: None,
         unavailable: Some(why),
         title_id: None,
+        unsynced: Vec::new(),
     };
 
     // Filesystem work goes to a blocking thread rather than running on
@@ -599,17 +682,27 @@ pub async fn save_status(
         let game_id = game_id.clone();
         let platform = platform.clone();
         tokio::task::spawn_blocking(move || {
-            save_sources(&app, &game_id, &platform)
-                .map(|s| (newest_mtime(&s.root, &s.subpaths), s.title_id))
+            save_sources(&app, &game_id, &platform).map(|s| {
+                // Measured in the same blocking pass as the walk: both
+                // read the same directory, and a second hop onto a
+                // worker thread to stat a handful of names would cost
+                // more than it does.
+                let unsynced = if platform == "PC" {
+                    unsynced_profile_links(&s.root)
+                } else {
+                    Vec::new()
+                };
+                (newest_mtime(&s.root, &s.subpaths), s.title_id, unsynced)
+            })
         })
         .await
         .unwrap_or_else(|e| Err(format!("save lookup failed: {e}")))
     };
-    let ((local_modified, local_bytes), title_id) = match resolved {
+    let ((local_modified, local_bytes), title_id, unsynced) = match resolved {
         Ok(v) => v,
         Err(e) => return unavailable(e),
     };
-    let latest = fetch_versions(&server_base, &game_id)
+    let latest = fetch_versions(&server_base, &game_id, &save_token(&app))
         .await
         .unwrap_or_default()
         .into_iter()
@@ -643,6 +736,7 @@ pub async fn save_status(
         latest,
         unavailable: None,
         title_id,
+        unsynced,
     }
 }
 
@@ -681,8 +775,7 @@ pub async fn upload_save(
         urlencoding::encode(&device),
         local_modified
     );
-    let response = reqwest::Client::new()
-        .post(url)
+    let response = save_request(reqwest::Method::POST, url, &save_token(&app))
         .body(archive)
         .send()
         .await
@@ -716,7 +809,7 @@ pub async fn download_save(
     let version = match version {
         Some(v) if !v.is_empty() => v,
         _ => {
-            fetch_versions(&server_base, &game_id)
+            fetch_versions(&server_base, &game_id, &save_token(&app))
                 .await?
                 .into_iter()
                 .next()
@@ -730,7 +823,10 @@ pub async fn download_save(
         saves_url(&server_base, &game_id),
         urlencoding::encode(&version)
     );
-    let response = reqwest::get(url).await.map_err(|e| e.to_string())?;
+    let response = save_request(reqwest::Method::GET, url, &save_token(&app))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     if !response.status().is_success() {
         return Err(format!(
             "server returned {} fetching the save",
@@ -1366,6 +1462,140 @@ mod tests {
         assert!(!restored
             .join("drive_c/users/you/Documents/thesis/chapter0.txt")
             .exists());
+
+        fs::remove_dir_all(&base).unwrap();
+        fs::remove_dir_all(&restored).unwrap();
+    }
+
+    #[test]
+    fn a_profile_folder_linked_out_of_the_prefix_is_reported() {
+        // The one hole in PC save sync: a game that saves to Documents
+        // writes through a link Wine created, to a directory the
+        // archive walk (rightly) refuses to follow.
+        let (prefix, base) = wine_prefix_fixture();
+        assert_eq!(unsynced_profile_links(&prefix), vec!["Documents"]);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_that_keeps_its_own_folders_reports_nothing() {
+        let base = scratch("links-none");
+        let prefix = base.join("prefix");
+        let users = prefix.join("drive_c/users/you");
+        write(&users.join("Documents/save.dat"), "mine");
+        write(&users.join("AppData/Roaming/game/save.dat"), "mine too");
+
+        assert!(unsynced_profile_links(&prefix).is_empty());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_stays_inside_the_prefix_is_not_a_problem() {
+        // Whatever it points at is inside the archive either way, so
+        // warning about it would be noise.
+        let base = scratch("links-inside");
+        let prefix = base.join("prefix");
+        let users = prefix.join("drive_c/users/you");
+        write(&users.join("real-documents/save.dat"), "mine");
+        fs::create_dir_all(&users).unwrap();
+        std::os::unix::fs::symlink(users.join("real-documents"), users.join("Documents")).unwrap();
+
+        assert!(unsynced_profile_links(&prefix).is_empty());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_dangling_link_is_not_reported() {
+        // Nothing can be saved through it, so it is not a hole.
+        let base = scratch("links-dangling");
+        let prefix = base.join("prefix");
+        let users = prefix.join("drive_c/users/you");
+        fs::create_dir_all(&users).unwrap();
+        std::os::unix::fs::symlink(base.join("nowhere"), users.join("Saved Games")).unwrap();
+
+        assert!(unsynced_profile_links(&prefix).is_empty());
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_whole_prefix_round_trips_with_every_save_file_intact() {
+        // The end-to-end shape of PC sync, over a prefix laid out the
+        // way Wine actually lays one out: the three places Windows
+        // games really keep saves, a linked-out Documents, and junk
+        // that is part of the generated Windows install rather than
+        // anyone's progress.
+        let base = scratch("prefix-round-trip");
+        let home = base.join("home");
+        let prefix = base.join("prefixes/ULTRAKILL");
+        let users = prefix.join("drive_c/users/you");
+
+        let saves = [
+            ("AppData/Roaming/ULTRAKILL/slot1.bepis", "cybergrind"),
+            ("AppData/Roaming/ULTRAKILL/slot2.bepis", "p-2"),
+            ("AppData/Local/ULTRAKILL/prefs.cfg", "fov=110"),
+            ("Saved Games/ULTRAKILL/campaign.sav", "act III"),
+        ];
+        for (path, contents) in saves {
+            write(&users.join(path), contents);
+        }
+        // Part of the prefix, not part of anyone's progress — but
+        // inside it, so it comes along. That is the correct trade:
+        // guessing which files inside a prefix are "really" saves is
+        // how a sync loses somebody's progress.
+        write(
+            &prefix.join("drive_c/windows/system32/kernel32.dll"),
+            "stub",
+        );
+        // And the user's own files, linked out, which must not.
+        write(&home.join("Documents/tax-return.pdf"), "not a save");
+        std::os::unix::fs::symlink(home.join("Documents"), users.join("Documents")).unwrap();
+
+        let source = SaveSource {
+            root: prefix.clone(),
+            subpaths: vec![PathBuf::from("drive_c/users")],
+            title_id: None,
+        };
+
+        let archive = build_archive(&source).unwrap();
+        let restored = scratch("prefix-round-trip-restored");
+        extract_archive(&archive, &restored).unwrap();
+
+        for (path, contents) in saves {
+            let landed = restored.join("drive_c/users/you").join(path);
+            assert!(landed.is_file(), "{path} did not survive the round trip");
+            assert_eq!(fs::read_to_string(&landed).unwrap(), contents, "{path}");
+        }
+        assert!(
+            !restored.join("drive_c/users/you/Documents").exists(),
+            "the user's own documents must never be swept in"
+        );
+        // Only the subpath asked for: the rest of the prefix is a
+        // Windows install every machine rebuilds for itself.
+        assert!(!restored.join("drive_c/windows").exists());
+
+        // Restoring over an existing save moves it aside rather than
+        // deleting it — the whole reason a restore is safe to offer.
+        let restore_target = SaveSource {
+            root: restored.clone(),
+            subpaths: vec![PathBuf::from("drive_c/users")],
+            title_id: None,
+        };
+        back_up_existing(&restore_target).unwrap();
+        extract_archive(&archive, &restored).unwrap();
+        let backups: Vec<String> = fs::read_dir(restored.join("drive_c"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("users.bak-"))
+            .collect();
+        assert_eq!(backups.len(), 1, "expected one backup, got {backups:?}");
+        assert_eq!(
+            fs::read_to_string(
+                restored.join("drive_c/users/you/AppData/Roaming/ULTRAKILL/slot1.bepis")
+            )
+            .unwrap(),
+            "cybergrind"
+        );
 
         fs::remove_dir_all(&base).unwrap();
         fs::remove_dir_all(&restored).unwrap();

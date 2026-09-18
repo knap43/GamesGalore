@@ -894,6 +894,13 @@
     border-color: rgba(63,217,155,0.28);
     color: #7fe8bd;
   }
+  /* Neither a failure nor a success: something about this game's setup
+     that is worth knowing before you rely on it. */
+  .install-error.is-info {
+    background: var(--bg-panel-alt);
+    border-color: var(--border-hair-2);
+    color: var(--text-muted);
+  }
 
   .viewer {
     position: relative;
@@ -1152,6 +1159,15 @@
         <div class="setting-input-row" style="margin-top:12px;">
           <input class="setting-input" id="device-name-input" type="text"
                  placeholder="This machine's name, shown in save history" autocomplete="off">
+        </div>
+        <div class="setting-input-row" style="margin-top:8px;">
+          <input class="setting-input" id="save-token-input" type="password"
+                 placeholder="Save token, if the server asks for one" autocomplete="off"
+                 aria-label="Save token">
+        </div>
+        <div class="setting-desc" style="margin-top:6px;">
+          Only needed if the server has <code>SAVE_TOKEN</code> set. The saves are the one
+          writable thing it exposes; everything else it serves is read-only.
         </div>
       </div>
 
@@ -2036,6 +2052,40 @@ function setSaveNote(game, message, good = true) {
   const el = document.getElementById('install-error');
   el.textContent = message;
   el.classList.toggle('is-good', good);
+  el.classList.remove('is-info');
+  el.style.display = 'block';
+}
+
+/* Wine points a prefix's Documents, Saved Games and the rest at the
+   real home directory, and the archive deliberately refuses to follow
+   those links — what a prefix points out at is the user's own files,
+   not this game's save data. The consequence is that a game saving to
+   Documents has its save quietly left behind, with nothing about the
+   sync looking wrong. This is the only place that says so.
+
+   Checked when the detail view opens rather than at launch: by the
+   time someone is pressing Play it is too late to be useful, and the
+   remedy is a change in winecfg rather than anything this app can do. */
+async function checkPrefixCoverage(game) {
+  if (!saveSyncApplies(game) || game.platform !== 'PC') return;
+
+  let status;
+  try {
+    status = await fetchSaveStatus(game);
+  } catch (err) {
+    console.error('save status failed', err);
+    return;
+  }
+  if (!status || !status.unsynced || status.unsynced.length === 0) return;
+  if (currentDetailId !== game.id) return; // they moved on while we asked
+
+  const folders = status.unsynced.join(' and ');
+  const el = document.getElementById('install-error');
+  el.textContent = `${folders} in this game's Wine prefix link to your home folder, `
+    + 'so anything saved there is not synced. Run winecfg on the prefix and unlink them '
+    + 'under Desktop Integration to bring those saves in.';
+  el.classList.remove('is-good');
+  el.classList.add('is-info');
   el.style.display = 'block';
 }
 
@@ -2079,7 +2129,7 @@ let state = {
   prefixRoot: '',
   // Mirrors SaveSyncConfig::default() in settings.rs — on, and
   // inert until there's a save location it can actually use.
-  saveSync: { enabled: true, device_name: '', switch_data_dir: '', title_ids: {} },
+  saveSync: { enabled: true, device_name: '', switch_data_dir: '', title_ids: {}, token: '' },
 };
 
 /* ---------------------------------------------------------------
@@ -2122,6 +2172,7 @@ async function loadSettings() {
   document.getElementById('prefix-root-input').value = state.prefixRoot;
   document.getElementById('device-name-input').value = state.saveSync.device_name || '';
   document.getElementById('switch-data-dir-input').value = state.saveSync.switch_data_dir || '';
+  document.getElementById('save-token-input').value = state.saveSync.token || '';
   updateSaveSyncUI();
   renderSwitchSavesStatus();
   document.getElementById('server-base-input').value = s.server_base;
@@ -2589,6 +2640,8 @@ function openGameDetail(id) {
   renderThumbStrip(game);
   renderViewerMedia(game);
   refreshLaunchCandidates(game); // async; fills in the picker once it resolves
+  checkPrefixCoverage(game);     // async; only ever says anything for a PC prefix
+                                 // that links its save folders out of itself
 
   document.getElementById('view-library').style.display = 'none';
   document.getElementById('view-detail').style.display = 'block';
@@ -2938,6 +2991,14 @@ document.getElementById('save-sync-toggle').addEventListener('click', () => {
 
 document.getElementById('device-name-input').addEventListener('change', (e) => {
   state.saveSync.device_name = e.target.value.trim();
+  persistSettings();
+});
+
+document.getElementById('save-token-input').addEventListener('change', (e) => {
+  // Not trimmed away to nothing on purpose: clearing the field is how
+  // you tell a server that no longer wants a token to stop being sent
+  // one.
+  state.saveSync.token = e.target.value.trim();
   persistSettings();
 });
 

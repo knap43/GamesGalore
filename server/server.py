@@ -24,6 +24,7 @@ game's executable often sits inside its tree rather than beside it.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import shutil
 import subprocess
@@ -41,6 +42,7 @@ from config import (
     LIBRARY_ROOT,
     PORT,
     SAVE_ROOT,
+    SAVE_TOKEN,
     SAVE_VERSIONS_KEPT,
 )
 from library import scan_library
@@ -301,6 +303,27 @@ def _read_versions(directory: Path) -> list:
     return versions
 
 
+def _check_save_auth() -> None:
+    """
+    Guards the save endpoints when a token is configured.
+
+    These are the only routes here that write anything, and the only
+    ones carrying data that is personal rather than merely a copy of
+    what is already on the drive — so the guard covers reads as well as
+    writes. The catalog and the game files stay open: they are the
+    browsing surface this whole tool exists to expose on a LAN.
+
+    Compared in constant time, which costs nothing and removes the
+    question of whether a timing difference could be measured across a
+    network.
+    """
+    if not SAVE_TOKEN:
+        return
+    presented = request.headers.get("Authorization", "")
+    if not hmac.compare_digest(presented, f"Bearer {SAVE_TOKEN}"):
+        abort(401, "a valid save token is required")
+
+
 @app.route("/saves/<platform>/<title>")
 def save_list_route(platform: str, title: str):
     """
@@ -308,6 +331,7 @@ def save_list_route(platform: str, title: str):
     compares the newest entry against what's on its own disk to decide
     whether it is behind, ahead, or in conflict.
     """
+    _check_save_auth()
     return jsonify({"versions": _read_versions(_save_dir(platform, title))})
 
 
@@ -324,6 +348,7 @@ def save_upload_route(platform: str, title: str):
     recorded for display and conflict detection, never trusted for
     anything that touches the filesystem.
     """
+    _check_save_auth()
     blob = request.get_data()
     if not blob:
         abort(400, "empty upload")
@@ -365,6 +390,7 @@ def save_upload_route(platform: str, title: str):
 
 @app.route("/saves/<platform>/<title>/<version>")
 def save_download_route(platform: str, title: str, version: str):
+    _check_save_auth()
     directory = _save_dir(platform, title)
     path = _safe_join(directory, f"{_safe_segment(version)}.tar.gz")
     return send_file(path, conditional=True, as_attachment=True)

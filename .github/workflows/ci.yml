@@ -98,5 +98,10 @@ jobs:
       - name: Install jsdom
         run: npm ci --no-audit --no-fund
 
+      # The demo is generated from the app's frontend; drift fails here
+      # rather than on a visitor a week later.
+      - name: Demo is in step with the app
+        run: npm run check:demo
+
       - name: Test
         run: npm test

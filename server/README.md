@@ -156,6 +156,21 @@ and falls back to mtime, since a `noatime` mount reports a stale atime rather
 than none at all. Evicting too eagerly costs only CPU on the next download of
 that title, which is why the cap can be set as low as the disk requires.
 
+## Authenticating the save endpoints
+
+`SAVE_TOKEN` in `config.py` is empty by default, which means no check at all —
+a LAN tool that refuses to work until it is configured is a LAN tool nobody
+configures. Note what the difference actually is, though: with it unset, anyone
+who can reach the port can read, overwrite and grow your saves, while everything
+else here is read-only.
+
+Set it to any long random string (`openssl rand -hex 32`) and put the same value
+in the client's Settings. Requests then need `Authorization: Bearer <token>` on
+all three `/saves` routes — reads included, since a save is personal in a way the
+catalog is not — and are compared in constant time. `/library`, `/media` and
+`/download` stay open: they are the browsing surface this whole tool exists to
+expose on a LAN.
+
 ## Path safety
 
 `filename` and `game_id` come straight from the URL, so `_safe_join` rejects

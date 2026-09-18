@@ -80,6 +80,11 @@ pub struct SaveSyncConfig {
     pub switch_data_dir: String,
     #[serde(default)]
     pub title_ids: HashMap<String, String>,
+    /// Shared secret for the server's save endpoints, empty unless the
+    /// server is configured to want one. `default` because a
+    /// settings.json written before this existed must still load.
+    #[serde(default)]
+    pub token: String,
 }
 
 impl Default for SaveSyncConfig {
@@ -99,6 +104,9 @@ impl Default for SaveSyncConfig {
             device_name: default_device_name(),
             switch_data_dir: String::new(),
             title_ids: HashMap::new(),
+            // Empty unless the server asks for one, which is its own
+            // default too.
+            token: String::new(),
         }
     }
 }

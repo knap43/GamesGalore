@@ -292,6 +292,23 @@ often returns long before the game does — so it additionally waits on
 `wineserver -w` against that game's prefix, which is only meaningful *because*
 each game has its own.
 
+**Saves that land outside the prefix.** Wine's Desktop Integration points a
+prefix's `Documents`, `Saved Games` and friends at the real home directory, and
+the archive deliberately refuses to follow those links — what a prefix points
+*out* at is the user's own files, not this game's save data, and following them
+once meant archiving an entire home directory and then looping, since the
+prefix lives under it. The consequence is that a game saving to Documents has
+its save quietly left behind, with nothing about the sync looking wrong. Opening
+such a game's detail view now says so, names the folders, and points at the
+winecfg setting that fixes it. A link that stays inside the prefix, or a
+dangling one, is not reported: neither is a hole.
+
+**The save token.** If the server has `SAVE_TOKEN` set, put the same value in
+Settings under cloud saves and every save request carries it as a bearer token.
+Empty on both sides by default. The save endpoints are the only writable surface
+the server exposes, and the only one carrying data that isn't simply a copy of
+what is already on the drive.
+
 **Conflicts.** A save only on the server restores without asking, since there is
 nothing local to lose. A server save that is newer *than a local one* prompts,
 showing both timestamps and which machine the remote came from. If a restore
@@ -566,10 +583,8 @@ you've confirmed that's the only dialog capability in use.
   file it scans.
 - **PC saves are the prefix's user directory only.** A game that writes its
   save next to its own executable puts it in the install directory instead,
-  which is not archived. Nothing detects that case.
-- **No auth on the save endpoints.** They are writable, unlike everything else
-  the server exposes, which raises the stakes on the server's blanket lack of
-  authentication considerably. Fine on a trusted LAN; do not expose it further.
+  which is not archived. Nothing detects that case — unlike the linked-out
+  profile folders above, which are now reported.
 - **Sync-on-exit needs the app running.** If Games Galore is closed while a
   game is still open, nothing observes the exit and that session's save is not
   uploaded until the next time the game is launched and quit.

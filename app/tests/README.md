@@ -7,9 +7,12 @@ only thing mocked is the Tauri runtime it expects to find on `window`,
 which is also the seam the real backend sits behind.
 
 ```sh
-npm install     # jsdom only
-npm test        # every *.test.js, one process each
+npm install          # jsdom only
+npm test             # every *.test.js, one process each
 node saves.test.js   # or a single suite
+
+npm run build:demo   # regenerate docs/index.html from the app's frontend
+npm run check:demo   # fail if it is out of date (CI runs this)
 ```
 
 | Suite | Covers |

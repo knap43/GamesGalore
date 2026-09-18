@@ -49,5 +49,15 @@ SAVE_VERSIONS_KEPT = 10
 LEGACY_CACHE_DIR = Path.home() / ".cache" / "vault-server"
 LEGACY_SAVE_ROOT = Path.home() / ".local" / "share" / "vault-server" / "saves"
 
+# Shared secret for the save endpoints, which are the only writable
+# surface this server exposes. Empty means no check at all, which is
+# the default because a LAN tool that refuses to work until it is
+# configured is a LAN tool nobody configures — but note what the
+# difference actually is: with this unset, anyone who can reach the
+# port can read, overwrite and grow your saves, while everything else
+# here is read-only. Set it to any long random string (`openssl rand
+# -hex 32`) and put the same value in the client's Settings.
+SAVE_TOKEN = ""
+
 HOST = "0.0.0.0"
 PORT = 8420
