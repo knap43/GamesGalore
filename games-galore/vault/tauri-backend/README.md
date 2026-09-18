@@ -81,6 +81,42 @@ One deliberate consequence: if the server is unreachable, the cached shelf
 stays. The installed games are on disk and still launchable, and emptying the
 grid would be the single response that makes the app useless offline.
 
+### Installs are queued, checked and verified
+
+Three guards sit around the download loop, all added after the fact and
+all for failures that had actually happened or were one click away.
+
+**A bounded queue.** Every click used to start its own download loop
+immediately, so six queued-up titles meant six streams competing for
+one link — each slower than it needed to be, each reporting progress as
+though it were alone, and the one wanted first finishing last. Two
+transfer at a time now (`MAX_CONCURRENT_INSTALLS`); the rest are
+`Queued`, which the UI states plainly rather than showing a percentage
+that hasn't moved. Cancelling from the queue is free: nothing has been
+requested and nothing written.
+
+**A free-space check**, once the destination directory exists, so
+`statvfs` reports the filesystem the files will land on rather than
+whatever ancestor happened to exist first. The requirement is not
+simply the sum of the catalog's sizes: a `.nsz` decompresses on the way
+out, so a converting file is budgeted at twice its listed size, plus a
+256 MB margin for the filesystem's own overhead. If the check can't be
+made — not Unix, unreadable path — it is skipped rather than treated as
+a refusal.
+
+**Verification of what arrived.** A stream can end early without
+erroring at all: a dropped connection, a server that died mid-response.
+That writes a short file, reports success, and surfaces weeks later as
+an emulator crash nobody connects back to the install. Each file is now
+measured against `Content-Length` where the server sent one and the
+body wasn't encoded in transit, and against the catalog's size
+otherwise — except for a converted file, where the catalog's number is
+legitimately not what arrives. A mismatch deletes the partial file and
+fails the install with both numbers in the message. Where neither check
+applies (a chunked response for a converted file) the transfer is
+accepted; claiming to detect what we cannot would be worse than the
+gap.
+
 ### Choosing what to launch
 
 `find_local_game_file` walks the install directory recursively rather than
@@ -519,6 +555,10 @@ you've confirmed that's the only dialog capability in use.
 - **No resume.** An install interrupted partway starts over from the first
   file; already-complete files are downloaded again. The server supports range
   requests, so the pieces for resuming are there, but nothing uses them yet.
+- **No content hashing.** Transfers are checked for length, not for
+  correctness: a file that arrives complete but corrupted passes. A hash per
+  file in the catalog would close that, at the cost of the server hashing every
+  file it scans.
 - **PC saves are the prefix's user directory only.** A game that writes its
   save next to its own executable puts it in the install directory instead,
   which is not archived. Nothing detects that case.

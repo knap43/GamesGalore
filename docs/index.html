@@ -1561,6 +1561,13 @@ function applyInstallStatus(game, status) {
     game.localDir = null;
     game.installProgress = null;
     game.installError = null;
+  } else if (status.status === 'queued') {
+    // Carried in the same field as a download's progress so every
+    // place that asks "is something happening to this game?" keeps
+    // working; the status tag inside it is what tells them apart.
+    game.installed = false;
+    game.installProgress = { status: 'queued', file: '', pct: 0 };
+    game.installError = null;
   } else if (status.status === 'downloading') {
     game.installed = false;
     game.installProgress = status;
@@ -2690,14 +2697,19 @@ function renderCtaRow(game) {
   }
 
   if (game.installProgress) {
+    const queued = game.installProgress.status === 'queued';
     const pct = game.installProgress.pct ?? 0;
     playBtn.disabled = true;
-    playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M11 2h2v10.17l3.59-3.58L18 10l-5 5-5-5 1.41-1.41L11 12.17V2zM5 20h14v-2H5v2z"/></svg> Downloading…`;
+    playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M11 2h2v10.17l3.59-3.58L18 10l-5 5-5-5 1.41-1.41L11 12.17V2zM5 20h14v-2H5v2z"/></svg> ${queued ? 'Queued' : 'Downloading…'}`;
     uninstallBtn.style.display = 'none';
 
     progressEl.style.display = 'flex';
-    progressFill.style.width = `${pct}%`;
-    progressLabel.textContent = game.installProgress.file ? `${game.installProgress.file} — ${pct}%` : `${pct}%`;
+    progressFill.style.width = queued ? '0%' : `${pct}%`;
+    // A queued title has transferred nothing, so a percentage would be
+    // a lie dressed as information. Say what it's actually doing.
+    progressLabel.textContent = queued
+      ? 'Waiting for another install to finish'
+      : (game.installProgress.file ? `${game.installProgress.file} — ${pct}%` : `${pct}%`);
   } else if (game.installed) {
     playBtn.disabled = false;
     playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play`;

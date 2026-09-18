@@ -15,6 +15,7 @@ node saves.test.js   # or a single suite
 | Suite | Covers |
 | --- | --- |
 | `startup-cache.test.js` | The two-pass startup: the cached shelf painting before a deliberately slow `fetch_library` resolves, the catalog replacing it, an unreachable server leaving it standing, and the reconciliation not undoing a filter the user changed mid-flight. |
+| `install.test.js` | The install lifecycle: a queued title saying so, progress against the whole title, cancelling from either state, and a refusal (no room, a truncated transfer) reaching the screen. |
 | `picker.test.js` | The launch picker — when it appears, the order it offers executables in, what it passes to `launch_game`, persistence of a choice, and its place in the keyboard chain. |
 | `saves.test.js` | Cloud saves — sync before launch, upload after exit, the conflict prompt, and Title ID resolution from filenames, archives and a watched session. |
 | `demo.test.js` | The published demo in `docs/`: that it still works with no Tauri runtime at all, and that it carries every element id the app does (the drift guard for a file kept in step by hand). |

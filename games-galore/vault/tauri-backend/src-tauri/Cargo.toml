@@ -15,7 +15,11 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 futures-util = "0.3"
 urlencoding = "2"
 # "rt" is what provides spawn_blocking, which keeps filesystem and
-# compression work off the async runtime's worker threads.
-tokio = { version = "1", features = ["fs", "io-util", "rt"] }
+# compression work off the async runtime's worker threads. "sync" is
+# for the semaphore that bounds concurrent installs.
+tokio = { version = "1", features = ["fs", "io-util", "rt", "sync"] }
 tar = "0.4"
+# Only for statvfs, to check free space before starting an install.
+# There is no portable std equivalent; the check is skipped off Unix.
+libc = "0.2"
 flate2 = "1"
