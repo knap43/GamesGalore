@@ -2252,6 +2252,13 @@ function setSaveNote(game, message, good = true) {
   el.style.display = 'block';
 }
 
+/* Games already told about their prefix's linked-out folders, so the
+   notice is shown once rather than on every visit to the page. Not
+   persisted: a new run of the app is a fair moment to mention it
+   again, and a game whose saves have since been moved in won't
+   qualify a second time anyway. */
+const prefixNoticeShown = new Set();
+
 /* Wine points a prefix's Documents, Saved Games and the rest at the
    real home directory, and the archive deliberately refuses to follow
    those links — what a prefix points out at is the user's own files,
@@ -2267,6 +2274,7 @@ function setSaveNote(game, message, good = true) {
    which looks exactly like losing it. */
 async function checkPrefixCoverage(game) {
   if (!saveSyncApplies(game) || game.platform !== 'PC') return;
+  if (prefixNoticeShown.has(game.id)) return;
 
   let status;
   try {
@@ -2276,7 +2284,21 @@ async function checkPrefixCoverage(game) {
     return;
   }
   if (!status || !status.unsynced || status.unsynced.length === 0) return;
+
+  // A prefix that already holds save data is one this game is
+  // demonstrably saving inside, so a folder linked out of it is a hole
+  // nothing is falling through. Saying so anyway would be warning
+  // about a hypothetical — and doing it on every open, at that.
+  if (status.local_bytes > 0) return;
+
   if (currentDetailId !== game.id) return; // they moved on while we asked
+
+  // Once per game per run of the app. The condition doesn't change
+  // until the game is played, and repeating an unchanging notice every
+  // time somebody opens a page is how people learn to stop reading
+  // notices — this strip also carries install failures and save
+  // results, which are worth reading.
+  prefixNoticeShown.add(game.id);
 
   const folders = status.unsynced.join(' and ');
   const el = document.getElementById('install-error');

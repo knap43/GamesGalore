@@ -394,6 +394,13 @@ whose target is missing or empty — where a game may already have written saves
 through one, cutting it would leave that save outside the prefix, which looks
 exactly like losing it.
 
+The notice about it is shown once per game per run of the app, and only when the
+prefix holds no save data yet. A prefix that already contains saves is one the
+game is demonstrably writing inside, so a folder linked out of it is a hole
+nothing is falling through — and repeating an unchanging notice on every visit to
+a page is how people learn to stop reading notices, on a strip that also carries
+install failures and save results.
+
 That case is resolved by watching a session instead, in `prefix_migrate.rs`. The
 trick is the one that already identifies a Switch title from a play session:
 photograph the linked-out directory before launch, photograph it again once the

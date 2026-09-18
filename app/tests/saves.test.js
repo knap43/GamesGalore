@@ -353,7 +353,12 @@ async function boot(opts = {}) {
   // Wine links a prefix's Documents out to the real home directory and
   // the archive refuses to follow it, so a game saving there is left
   // behind with nothing about the sync looking wrong.
-  t = await boot({ unsynced: ['Documents', 'Saved Games'] });
+  // local_bytes: 0 — nothing inside the prefix yet, so a folder linked
+  // out of it is a hole something could actually fall through.
+  t = await boot({ unsynced: ['Documents', 'Saved Games'],
+                   status: { state: 'none', local_modified: 0, local_bytes: 0, latest: null,
+                             unavailable: null, title_id: null,
+                             unsynced: ['Documents', 'Saved Games'] } });
   await openGame(t.doc, 'ULTRAKILL');
   await sleep(200);
   const prefixNote = t.doc.getElementById('install-error');
@@ -372,7 +377,9 @@ async function boot(opts = {}) {
   check('a prefix that keeps its own folders says nothing',
         t.doc.getElementById('install-error').style.display, 'none');
 
-  t = await boot({ unsynced: ['Documents'] });
+  t = await boot({ unsynced: ['Documents'],
+                   status: { state: 'none', local_modified: 0, local_bytes: 0, latest: null,
+                             unavailable: null, title_id: null, unsynced: ['Documents'] } });
   await openGame(t.doc, '198X');
   await sleep(200);
   check('and a Switch game is never asked about prefixes at all',
@@ -401,6 +408,45 @@ async function boot(opts = {}) {
   await sleep(150);
   check('a session that moved nothing says nothing',
         t.doc.getElementById('install-error').style.display, 'none');
+
+  // === the notice knows when to stay quiet =============================
+  // It used to appear on every single visit to an affected game's
+  // page, which is how people learn to stop reading notices — and this
+  // strip also carries install failures and save results.
+  {
+    const unsynced = ['Documents'];
+    const at_risk = { state: 'none', local_modified: 0, local_bytes: 0, latest: null,
+                      unavailable: null, title_id: null, unsynced };
+    const t2 = await boot({ unsynced, status: at_risk });
+
+    await openGame(t2.doc, 'ULTRAKILL');
+    await sleep(200);
+    check('the first visit says something',
+          t2.doc.getElementById('install-error').style.display, 'block');
+
+    t2.doc.getElementById('detail-back').click();
+    await sleep(150);
+    await openGame(t2.doc, 'ULTRAKILL');
+    await sleep(200);
+    check('...and the second does not repeat it',
+          t2.doc.getElementById('install-error').style.display, 'none');
+  }
+
+  {
+    // A prefix that already holds save data is one this game is
+    // demonstrably saving inside, so the linked-out folder is a hole
+    // nothing is falling through.
+    const unsynced = ['Documents'];
+    const saving_inside = { state: 'in_sync', local_modified: 100, local_bytes: 4096,
+                            latest: null, unavailable: null, title_id: null, unsynced };
+    const t3 = await boot({ unsynced, status: saving_inside });
+
+    await openGame(t3.doc, 'ULTRAKILL');
+    await sleep(200);
+    check('a game already saving inside its prefix is not warned about one',
+          t3.doc.getElementById('install-error').style.display, 'none');
+    check('no uncaught errors around the quiet paths', t3.errors, []);
+  }
 
   finish();
 })();
