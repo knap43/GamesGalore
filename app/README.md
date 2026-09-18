@@ -15,6 +15,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
+| `playtime.rs` | `playtime.json` beside them: seconds played, last played and a session count per game, recorded by the launcher. See **Playtime** below. |
 | `saves.rs` | Locates a game's save data, packs it as a tar.gz and syncs it with the server. See **Cloud saves** below. |
 
 `Game.files` is a list because Switch titles can have several — base game,
@@ -116,6 +117,33 @@ fails the install with both numbers in the message. Where neither check
 applies (a chunked response for a converted file) the transfer is
 accepted; claiming to detect what we cannot would be worse than the
 gap.
+
+### Playtime
+
+The UI offered "Recently played" and "Playtime" as sort options from the first
+version, and for a real library both did nothing: those fields existed only on
+the mock catalog. Everything needed to fill them in was already here — the
+launcher knows when a game starts, and the exit supervision added for cloud
+saves knows when it stops — so `playtime.rs` records both in `playtime.json` and
+pushes each change to the frontend, which needed no new rendering to use them.
+
+A session is timed from launch to *after* `wineserver -w` returns, not to the
+emulator process exiting: for a PC game that process is Wine's launcher, which
+returns long before the game does, and stopping the clock there would record
+every session as a few seconds. Under a minute is counted as a launch but not as
+playtime — a game closed because it opened on the wrong monitor is not an hour
+played, and a library where every mis-click adds a minute stops being a useful
+sort within a week. Over twelve hours is capped rather than discarded: that is a
+game left running overnight, and something was probably played.
+
+Written once per session rather than on a timer, so a session ended by a power
+cut is a session this does not record. That is the better trade against
+rewriting the file every minute for the lifetime of every game anyone plays.
+
+The sort control came back with it, as pills rather than a dropdown — WebKitGTK
+draws a native `<select>` itself and ignores this stylesheet entirely, which is
+why the original was removed and why the launch picker is a custom listbox too.
+The chosen order is persisted with the rest of the settings.
 
 ### Choosing what to launch
 
@@ -610,12 +638,6 @@ you've confirmed that's the only dialog capability in use.
 - **Sync-on-exit needs the app running.** If Games Galore is closed while a
   game is still open, nothing observes the exit and that session's save is not
   uploaded until the next time the game is launched and quit.
-- **Playtime tracking.** Deliberately deferred, not an oversight. The "Recently
-  played" and "Playtime" sort options work for mock/browser-preview games but do
-  nothing for real ones, since no `hours`/`lastPlayedDaysAgo` field exists for
-  them and nothing records playtime. Hooking into `launch_game` to time a
-  session is a real feature, not a wiring gap; it's a harmless no-op until
-  someone wants it.
 
 ## Verification status
 

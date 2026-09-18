@@ -3,6 +3,7 @@ mod dependencies;
 mod install_state;
 mod launcher;
 mod migrate;
+mod playtime;
 mod saves;
 mod server;
 mod settings;
@@ -28,6 +29,7 @@ fn main() {
             install_state::cancel_install,
             launcher::launch_game,
             launcher::list_launch_candidates,
+            playtime::get_playtime,
             saves::save_status,
             saves::upload_save,
             saves::download_save,

@@ -311,6 +311,7 @@ fn supervise(
     game_id: String,
     prefix: Option<PathBuf>,
 ) {
+    let started_at = crate::playtime::now();
     std::thread::spawn(move || {
         let _ = child.wait();
         if let Some(prefix) = prefix {
@@ -319,6 +320,15 @@ fn supervise(
                 .env("WINEPREFIX", &prefix)
                 .status();
         }
+        // Recorded after wineserver has gone: for a PC game the
+        // emulator process is wine's launcher, which returns long
+        // before the game itself does, and stopping the clock there
+        // would record every session as a few seconds long.
+        crate::playtime::finished(
+            &app,
+            &game_id,
+            crate::playtime::now().saturating_sub(started_at),
+        );
         // Best-effort: a missing listener is not worth reporting, and
         // there is nothing to retry against.
         let _ = app.emit("game:exited", &game_id);
@@ -389,6 +399,11 @@ pub fn launch_game(
     let child = command
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
+
+    // Recorded before the session rather than after it, so a game
+    // shows as "just played" the moment it opens instead of only once
+    // it closes — which for a long session is hours later.
+    crate::playtime::started(&app, &game_id);
 
     supervise(app, child, game_id, prefix);
     Ok(())

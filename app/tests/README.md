@@ -19,6 +19,7 @@ npm run check:demo   # fail if it is out of date (CI runs this)
 | --- | --- |
 | `startup-cache.test.js` | The two-pass startup: the cached shelf painting before a deliberately slow `fetch_library` resolves, the catalog replacing it, an unreachable server leaving it standing, and the reconciliation not undoing a filter the user changed mid-flight. |
 | `install.test.js` | The install lifecycle: a queued title saying so, progress against the whole title, cancelling from either state, and a refusal (no room, a truncated transfer) reaching the screen. |
+| `playtime.test.js` | Playtime: what the cards and detail header show, both time-based sorts, a finished session updating them live, and the sort control itself. |
 | `picker.test.js` | The launch picker — when it appears, the order it offers executables in, what it passes to `launch_game`, persistence of a choice, and its place in the keyboard chain. |
 | `saves.test.js` | Cloud saves — sync before launch, upload after exit, the conflict prompt, and Title ID resolution from filenames, archives and a watched session. |
 | `settings.test.js` | Settings under keyboard and gamepad control: every control reachable, nothing hidden or disabled focused, both ends of the form, and Escape from a field committing before it closes. |

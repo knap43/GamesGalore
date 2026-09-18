@@ -388,18 +388,46 @@
     stroke: var(--text-faint);
   }
 
-  .sort-select {
+  /* Pills rather than a <select>. WebKitGTK draws a native dropdown
+     itself, ignoring every rule in this stylesheet, which is why the
+     old one was removed rather than restyled — and why the launch
+     picker is a custom listbox too. Four options fit on one row, so
+     there is nothing a dropdown would have bought here anyway. */
+  .sort-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .sort-label {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-right: 4px;
+  }
+  .sort-pill {
     background: var(--bg-card);
     border: 1px solid var(--border-hair);
-    border-radius: 8px;
+    border-radius: var(--radius-pill);
     color: var(--text-muted);
     font-family: var(--font-body);
-    font-size: 13px;
-    padding: 9px 12px;
-    outline: none;
+    font-size: 12.5px;
+    padding: 7px 14px;
     cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   }
-  .sort-select:focus { border-color: rgba(255,79,158,0.45); }
+  .sort-pill:hover { color: var(--text-primary); }
+  .sort-pill:focus-visible {
+    outline: none;
+    border-color: var(--accent-pink);
+    color: var(--text-primary);
+  }
+  .sort-pill.active {
+    background: linear-gradient(135deg, rgba(255,79,158,0.16), rgba(155,92,246,0.16));
+    border-color: rgba(255,79,158,0.45);
+    color: var(--text-primary);
+  }
 
   /* ---- Grid ---- */
   .grid {
@@ -1246,6 +1274,9 @@
           <h1>Your Library</h1>
           <p><span id="visible-count">0</span> of <span id="total-count">0</span> games</p>
         </div>
+        <div class="sort-row" id="sort-row" role="group" aria-label="Sort order">
+          <span class="sort-label">Sort</span>
+        </div>
       </div>
 
       <div class="server-notice" id="server-notice" style="display:none"></div>
@@ -1506,6 +1537,7 @@ async function loadCachedGames() {
 
   GAMES = cached;
   await hydrateInstallStatus();
+  await loadPlaytime();
 
   // The cache holds installed titles by construction, so this is a
   // deliberately partial catalog. Pinning the Installed filter on
@@ -1539,6 +1571,69 @@ async function loadGames() {
   if (live) GAMES = live;
 
   await hydrateInstallStatus();
+  await loadPlaytime();
+}
+
+/* Real playtime, from the local record the launcher keeps.
+
+   The two fields this fills in — `hours` and `lastPlayedDaysAgo` —
+   already drive the card sub-line, the detail header and two of the
+   four sort options. Until now only the mock catalog had them, which
+   meant "Recently played" and "Playtime" were a no-op dressed up as a
+   feature for anyone with a real library. Nothing below had to change
+   to make them work; the numbers simply had to exist. */
+async function loadPlaytime() {
+  if (!TAURI) return;
+
+  let playtime = {};
+  try {
+    // `|| {}`: nothing about a missing playtime record should be able
+    // to stop the library loading, and this runs on the startup path.
+    playtime = (await TAURI.core.invoke('get_playtime')) || {};
+  } catch (err) {
+    console.error('failed to read playtime', err);
+    return;
+  }
+  GAMES.forEach(g => applyPlaytime(g, playtime[g.id]));
+}
+
+/* Left undefined rather than zeroed for a game nobody has played:
+   every renderer here checks `typeof` before showing either field, so
+   an absent value prints nothing at all, while a 0 would print "0h
+   played" under every title in the library. */
+function applyPlaytime(game, entry) {
+  delete game.hours;
+  delete game.lastPlayedDaysAgo;
+  if (!entry) return;
+
+  // Under a minute isn't playtime — the backend already declines to
+  // count it, and this declines to display it.
+  if (entry.seconds >= 60) {
+    game.hours = entry.seconds >= 36000
+      ? Math.round(entry.seconds / 3600)          // 10h+: whole hours
+      : Math.round(entry.seconds / 360) / 10;     // below that, one decimal
+  }
+  if (entry.last_played > 0) {
+    const daysAgo = Math.floor((Date.now() / 1000 - entry.last_played) / 86400);
+    game.lastPlayedDaysAgo = Math.max(0, daysAgo);
+  }
+}
+
+/* The launcher pushes a new total when a session ends, so a sort by
+   playtime is right the moment you quit a game rather than after a
+   restart. */
+function setupPlaytimeListener() {
+  if (!TAURI) return;
+  TAURI.event.listen('playtime:changed', (event) => {
+    const [id, entry] = event.payload;
+    const game = GAMES.find(g => g.id === id);
+    if (!game) return;
+    applyPlaytime(game, entry);
+    if (currentDetailId === id) {
+      document.getElementById('detail-meta').innerHTML = detailMetaHTML(game);
+    }
+    renderGrid();
+  });
 }
 
 /* Overlays the local install record onto whatever is in GAMES. Shared
@@ -2120,8 +2215,9 @@ let state = {
   platforms: new Set(),   // empty = every platform
   installedOnly: false,
   query: '',
-  sort: 'alpha', // no UI to change this now the dropdown's removed; alphabetical
-                 // is the only option that's actually meaningful without playtime data
+  sort: 'alpha', // persisted with the rest of the settings; the pills in the
+                 // topbar change it. Both time-based orders do real work now
+                 // that the launcher records playtime.
   soundEnabled: true,
   serverBase: '',
   installRoot: '',
@@ -2169,6 +2265,7 @@ async function loadSettings() {
   state.launchOverrides = s.launch_overrides || {};
   state.prefixRoot = s.prefix_root || '';
   state.saveSync = s.save_sync || state.saveSync;
+  if (s.sort) state.sort = s.sort;
   document.getElementById('prefix-root-input').value = state.prefixRoot;
   document.getElementById('device-name-input').value = state.saveSync.device_name || '';
   document.getElementById('switch-data-dir-input').value = state.saveSync.switch_data_dir || '';
@@ -2192,6 +2289,7 @@ async function persistSettings() {
       launch_overrides: state.launchOverrides,
       prefix_root: state.prefixRoot,
       save_sync: state.saveSync,
+      sort: state.sort,
     },
   });
 }
@@ -2402,6 +2500,25 @@ async function retryLibrary() {
   if (!libraryUnreachable) focusNoScroll(document.getElementById('search'));
 }
 
+/* The four orders, in the order they appear. "Recent" and "Playtime"
+   are only meaningful because the launcher now records both; before
+   that, this control was removed rather than left offering two options
+   that quietly did nothing. */
+const SORT_OPTIONS = [
+  { value: 'recent',   label: 'Recent' },
+  { value: 'playtime', label: 'Playtime' },
+  { value: 'alpha',    label: 'A–Z' },
+  { value: 'platform', label: 'Platform' },
+];
+
+function renderSortPills() {
+  const row = document.getElementById('sort-row');
+  row.innerHTML = '<span class="sort-label">Sort</span>' + SORT_OPTIONS.map(opt => `
+    <button class="sort-pill${state.sort === opt.value ? ' active' : ''}" type="button"
+            data-sort="${opt.value}" aria-pressed="${state.sort === opt.value}">${opt.label}</button>
+  `).join('');
+}
+
 function renderSidebarFooter() {
   const installedCount = GAMES.filter(g => g.installed).length;
   const refreshing = isRefreshing
@@ -2425,14 +2542,19 @@ function getFilteredSortedGames() {
   if (state.sort === 'alpha') {
     list = list.slice().sort((a, b) => a.title.localeCompare(b.title));
   } else if (state.sort === 'playtime') {
-    list = list.slice().sort((a, b) => b.hours - a.hours);
+    // An unplayed game has no `hours` at all, and `undefined` in a
+    // comparator poisons the whole sort with NaN rather than merely
+    // ranking that one game oddly.
+    list = list.slice().sort((a, b) => (b.hours || 0) - (a.hours || 0));
   } else if (state.sort === 'platform') {
     list = list.slice().sort((a, b) =>
       PLATFORM_ORDER.indexOf(a.platform) - PLATFORM_ORDER.indexOf(b.platform) ||
       a.title.localeCompare(b.title)
     );
   } else {
-    list = list.slice().sort((a, b) => a.lastPlayedDaysAgo - b.lastPlayedDaysAgo);
+    // Never played sorts last, not first: Infinity rather than 0.
+    const lastPlayed = g => (typeof g.lastPlayedDaysAgo === 'number' ? g.lastPlayedDaysAgo : Infinity);
+    list = list.slice().sort((a, b) => lastPlayed(a) - lastPlayed(b) || a.title.localeCompare(b.title));
   }
   return list;
 }
@@ -2785,6 +2907,19 @@ function renderViewerMedia(game) {
  * EVENTS
  * --------------------------------------------------------------- */
 document.addEventListener('click', (e) => {
+  const sortPill = e.target.closest('.sort-pill');
+  if (sortPill) {
+    state.sort = sortPill.dataset.sort;
+    persistSettings();
+    renderSortPills();
+    renderGrid(true); // a different order is a different result set to read
+    // The pills are rebuilt, so the element that was clicked no longer
+    // exists — focus its replacement rather than dropping focus onto
+    // the body, which would strand a keyboard or gamepad user.
+    focusNoScroll(document.querySelector(`.sort-pill[data-sort="${state.sort}"]`));
+    return;
+  }
+
   if (e.target.closest('#server-notice-retry')) {
     retryLibrary();
     return;
@@ -3341,6 +3476,10 @@ function moveDirection(dir) {
 
   if (active.id === 'search') {
     if (dir === 'down') focusNoScroll(document.querySelector('.nav-item'));
+    else if (dir === 'right') {
+      const pill = document.querySelector('.sort-pill.active') || document.querySelector('.sort-pill');
+      if (pill) focusNoScroll(pill);
+    }
     // 'up' intentionally does nothing now — search is the topmost
     // element in the sidebar, not sandwiched between the grid and the
     // nav-items the way it was before the move.
@@ -3373,6 +3512,22 @@ function moveDirection(dir) {
     return;
   }
 
+  // The sort pills sit above the grid, so the grid is what they lead
+  // down into and the search box is what they lead up to — the same
+  // relationship the sidebar's nav items have, kept consistent so
+  // neither a keyboard nor a D-pad has to learn a special case.
+  if (active.classList.contains('sort-pill')) {
+    const pills = Array.from(document.querySelectorAll('.sort-pill'));
+    const idx = pills.indexOf(active);
+    if (dir === 'right' && idx < pills.length - 1) focusNoScroll(pills[idx + 1]);
+    else if (dir === 'left') {
+      if (idx === 0) focusNoScroll(document.querySelector('.nav-item'));
+      else focusNoScroll(pills[idx - 1]);
+    } else if (dir === 'down') focusFirstCard();
+    else if (dir === 'up') focusNoScroll(document.getElementById('search'));
+    return;
+  }
+
   if (active.classList.contains('nav-item')) {
     const items = Array.from(document.querySelectorAll('.nav-item'));
     const idx = items.indexOf(active);
@@ -3400,8 +3555,12 @@ function moveDirection(dir) {
     } else if (dir === 'down' && idx + cols < virtualGames.length) {
       focusGameByIndex(idx + cols);
     } else if (dir === 'up') {
-      if (idx - cols < 0) focusNoScroll(document.getElementById('search'));
-      else focusGameByIndex(idx - cols);
+      if (idx - cols < 0) {
+        // Above the top row is the sort control, which is what's
+        // physically above it on screen; search is one further up.
+        const pill = document.querySelector('.sort-pill.active') || document.querySelector('.sort-pill');
+        focusNoScroll(pill || document.getElementById('search'));
+      } else focusGameByIndex(idx - cols);
     }
     return;
   }
@@ -3592,6 +3751,7 @@ window.addEventListener('resize', () => {
 /* Everything that reflects the contents of GAMES. Called twice at
    startup — once for the cached shelf, once for the real catalog. */
 function renderShell() {
+  renderSortPills();
   renderPlatformNav();
   renderStatusNav();
   renderSidebarFooter();
@@ -3603,6 +3763,7 @@ async function init() {
   renderGrid(); // shows the "Loading your library…" state immediately
   setupInstallStatusListener();
   setupGameExitListener();
+  setupPlaytimeListener();
 
   await loadSettings();   // must resolve first — both loads need state.serverBase
                           // and the install root

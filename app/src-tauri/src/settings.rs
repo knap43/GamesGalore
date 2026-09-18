@@ -60,6 +60,12 @@ pub struct Settings {
     pub prefix_root: String,
     #[serde(default)]
     pub save_sync: SaveSyncConfig,
+    /// Which order the library is shown in. Kept here rather than in
+    /// the frontend's own storage so it survives a restart the same
+    /// way every other preference does; `default` so a settings.json
+    /// written before the sort control came back still loads.
+    #[serde(default = "default_sort")]
+    pub sort: String,
 }
 
 /// Everything cloud saves need that can't be derived.
@@ -113,6 +119,10 @@ impl Default for SaveSyncConfig {
 
 /// The machine's hostname where one is available, since the whole point
 /// is telling two machines apart in a version list.
+fn default_sort() -> String {
+    "alpha".to_string()
+}
+
 fn default_device_name() -> String {
     std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -183,6 +193,7 @@ impl Default for Settings {
             launch_overrides: HashMap::new(),
             prefix_root: String::new(),
             save_sync: SaveSyncConfig::default(),
+            sort: default_sort(),
         }
     }
 }
