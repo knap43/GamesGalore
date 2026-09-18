@@ -6,26 +6,34 @@
 #
 #   cd packaging && makepkg -si
 #
-# This is the -git flavour: it builds whatever is on the repository's
-# default branch. To build a local checkout instead — your own working
-# tree, unpushed — change the source line to point at it:
+# It builds THIS CHECKOUT — the tree this file sits in, exactly as it
+# is on disk, uncommitted changes included. There is no `source` array
+# and nothing is cloned or downloaded, which is deliberate: a PKGBUILD
+# that fetched from GitHub would package whatever is on the default
+# branch there rather than what you are looking at, and would quietly
+# disagree with your working tree every time the two differ.
 #
-#   source=("$_pkgname::git+file:///home/you/GamesGalore")
+# For an AUR-style package that builds the published repository
+# instead, replace the empty source with:
 #
-# Note that git+file:// still builds committed work, not uncommitted
-# changes; `makepkg` clones what it is given.
+#   source=("$pkgname::git+https://github.com/knap43/GamesGalore.git")
+#   sha256sums=('SKIP')
+#
+# and change the three `cd "$_root"` lines below to
+# `cd "$srcdir/$pkgname"`.
 #
 # Deliberately not `cargo tauri build`. That runs the bundler, which
 # downloads linuxdeploy and needs libfuse.so.2 to run it — on Arch that
 # means installing `fuse2` alongside the fuse3 the system already has,
 # and it is the usual reason an AppImage build stops after producing
-# the binary. A package doesn't need any of that: `tauri::generate_context!`
+# the binary. A package needs none of it: `tauri::generate_context!`
 # embeds the frontend into the binary at compile time, so the one file
 # installed below is the whole application.
 
-pkgname=games-galore-git
-_pkgname=games-galore
-pkgver=0.1.0.r0.0000000
+pkgname=games-galore
+# Keep in step with app/src-tauri/tauri.conf.json, which is the version
+# the app reports about itself.
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="Game library front-end for a self-hosted library server"
 arch=('x86_64')
@@ -34,70 +42,67 @@ license=('MIT')
 # webkit2gtk-4.1 is what Tauri v2 renders in; the rest come with it on
 # most systems but are named here so a minimal install still works.
 depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'libsoup3')
-makedepends=('git' 'rust' 'cargo' 'pkgconf')
+makedepends=('rust' 'cargo' 'pkgconf')
 optdepends=(
   'wine: running PC titles'
   'duckstation: PlayStation titles'
   'pcsx2: PlayStation 2 titles'
   'python: running the library server on this machine too'
 )
-provides=("$_pkgname")
-conflicts=("$_pkgname")
-source=("$_pkgname::git+https://github.com/knap43/GamesGalore.git")
-sha256sums=('SKIP')
+source=()
 
-pkgver() {
-  cd "$srcdir/$_pkgname"
-  # The version the app reports, plus how far past it this checkout is.
-  local version
-  version=$(grep -m1 '"version"' app/src-tauri/tauri.conf.json | cut -d'"' -f4)
-  printf "%s.r%s.%s" "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
-}
-
-prepare() {
-  cd "$srcdir/$_pkgname/app/src-tauri"
-  # Vendoring up front means the build itself needs no network, which
-  # is what `makepkg` expects of it.
-  export RUSTUP_TOOLCHAIN=stable
-  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
-}
+# The repository root, one level up from this file. `$startdir` is where
+# makepkg found the PKGBUILD, so this holds wherever the checkout lives
+# and whatever it is called.
+_root="$startdir/.."
 
 build() {
-  cd "$srcdir/$_pkgname/app/src-tauri"
+  cd "$_root/app/src-tauri"
   export RUSTUP_TOOLCHAIN=stable
-  export CARGO_TARGET_DIR=target
-  cargo build --frozen --release
+  # --locked, not --frozen: the lockfile is committed and must be
+  # obeyed, but fetching the crates it names is fine.
+  cargo build --release --locked
 }
 
 check() {
-  cd "$srcdir/$_pkgname/app/src-tauri"
+  cd "$_root/app/src-tauri"
   export RUSTUP_TOOLCHAIN=stable
-  cargo test --frozen --release
+  # A second compile, in test configuration — `makepkg --nocheck` skips
+  # it when you would rather not wait.
+  cargo test --release --locked
 }
 
 package() {
-  cd "$srcdir/$_pkgname"
+  install -Dm755 "$_root/app/src-tauri/target/release/$pkgname" \
+    "$pkgdir/usr/bin/$pkgname"
 
-  install -Dm755 "app/src-tauri/target/release/$_pkgname" \
-    "$pkgdir/usr/bin/$_pkgname"
-
-  install -Dm644 "packaging/$_pkgname.desktop" \
-    "$pkgdir/usr/share/applications/$_pkgname.desktop"
+  # From $startdir rather than the tree: the desktop entry is this
+  # PKGBUILD's own companion file and sits beside it.
+  install -Dm644 "$startdir/$pkgname.desktop" \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
 
   # The icon set the app already ships, filed where the desktop entry
   # can find it by name.
   local size
   for size in 32x32 64x64 128x128; do
-    install -Dm644 "app/src-tauri/icons/$size.png" \
-      "$pkgdir/usr/share/icons/hicolor/$size/apps/$_pkgname.png"
+    install -Dm644 "$_root/app/src-tauri/icons/$size.png" \
+      "$pkgdir/usr/share/icons/hicolor/$size/apps/$pkgname.png"
   done
-  install -Dm644 "app/src-tauri/icons/128x128@2x.png" \
-    "$pkgdir/usr/share/icons/hicolor/256x256/apps/$_pkgname.png"
-  install -Dm644 "app/src-tauri/icons/icon.png" \
-    "$pkgdir/usr/share/icons/hicolor/512x512/apps/$_pkgname.png"
+  install -Dm644 "$_root/app/src-tauri/icons/128x128@2x.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/$pkgname.png"
+  install -Dm644 "$_root/app/src-tauri/icons/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/$pkgname.png"
 
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
-  install -Dm644 app/README.md "$pkgdir/usr/share/doc/$pkgname/app.md"
-  install -Dm644 server/README.md "$pkgdir/usr/share/doc/$pkgname/server.md"
+  # Each of these is optional on purpose: a checkout that predates one
+  # of them still packages, rather than failing in fakeroot at the very
+  # end of a ten-minute build.
+  local doc
+  [[ -f "$_root/LICENSE" ]] &&
+    install -Dm644 "$_root/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  for doc in "README.md:README.md" "app/README.md:app.md" "server/README.md:server.md"; do
+    [[ -f "$_root/${doc%%:*}" ]] &&
+      install -Dm644 "$_root/${doc%%:*}" "$pkgdir/usr/share/doc/$pkgname/${doc##*:}"
+  done
+
+  return 0
 }

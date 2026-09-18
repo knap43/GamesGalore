@@ -613,15 +613,13 @@ makepkg -si            # add --nocheck to skip the test suite, which is a
                        # second full compile in release mode
 ```
 
-It is the `-git` flavour — it builds the repository's default branch. To build a
-local checkout instead, point the `source` line at it:
-
-```
-source=("$_pkgname::git+file:///home/you/GamesGalore")
-```
-
-Note that even then `makepkg` clones what it is given, so uncommitted work is
-not included.
+It builds **this checkout** — the tree the PKGBUILD sits in, exactly as it is on
+disk, uncommitted changes included. There is no `source` array and nothing is
+cloned: a PKGBUILD that fetched from GitHub would package whatever is on the
+default branch there rather than what you are looking at, and would disagree with
+your working tree every time the two differ. The header comment shows the
+three-line change for an AUR-style package that does build the published
+repository.
 
 Deliberately **not** `cargo tauri build`. That runs the bundler, which downloads
 `linuxdeploy` and needs `libfuse.so.2` to run it — on Arch that means installing
