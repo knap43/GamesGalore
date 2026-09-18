@@ -6,6 +6,14 @@ Disclaimer: the code in its entirety was written by an LLM — use it at your ow
 This is still kind of a WIP, as I wasn't able to resolve some bugs. Known gaps
 are listed at the bottom of each subproject's README.
 
+### Layout
+
+| Path | What it is |
+| --- | --- |
+| `app/` | The desktop client — a Tauri app around a single-file HTML/CSS/JS frontend, plus its Rust backend and test suites. |
+| `server/` | The Python library server that scans the drive and serves the catalog, the game files and the cloud saves. |
+| `docs/` | The GitHub Pages demo: the app's frontend, generated with its Tauri calls stubbed out. |
+
 ### Demo:
 https://knap43.github.io/GamesGalore/
 

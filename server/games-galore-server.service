@@ -1,0 +1,16 @@
+[Unit]
+Description=Games Galore library server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/games-galore-server
+ExecStart=/opt/games-galore-server/.venv/bin/python server.py
+Restart=on-failure
+RestartSec=5
+User=games-galore
+StateDirectory=games-galore-server
+
+[Install]
+WantedBy=multi-user.target

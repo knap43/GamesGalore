@@ -7,11 +7,10 @@ installing anything.
 ## Its relationship to the real frontend
 
 It started as a byte-identical copy of the app's own
-`games-galore/vault/tauri-backend/frontend/index.html` and is still
-substantially that file, so the UI, layout and navigation you see here are the
-real ones rather than a reimplementation. It is no longer identical, though:
-this copy carries a small set of demo-only changes, and the two files have to be
-re-synced by hand whenever the app's frontend changes.
+`app/frontend/index.html` and is still substantially that file, so the UI,
+layout and navigation you see here are the real ones rather than a
+reimplementation. It is no longer identical, though: this copy carries a small
+set of demo-only changes.
 
 What this copy adds on top of the app's version:
 

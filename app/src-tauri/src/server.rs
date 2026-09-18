@@ -1,4 +1,4 @@
-// Talks to the Python library server (the separate vault-server
+// Talks to the Python library server (the separate server/
 // project, running on the laptop with the mounted drive) instead of
 // touching any filesystem or network share directly. This app has no
 // local knowledge of where the library lives — it only knows a base

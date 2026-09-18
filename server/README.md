@@ -10,7 +10,7 @@ The library lives on a different, always-on machine, so doing the NSZ→NSP
 conversion server-side means the desktop client needs **no Python and no `nsz`
 at all** — that whole dependency stays on the one machine you're already
 managing as a server, and the client becomes a plain HTTP consumer. The client
-holds only its own install bookkeeping; see `../tauri-backend/`.
+holds only its own install bookkeeping; see `../app/`.
 
 ## Setup
 
@@ -22,17 +22,24 @@ python3 -m venv .venv
 Edit `config.py`: set `LIBRARY_ROOT` to the actual mount point and `CACHE_DIR`
 to wherever converted `.nsp` files should be cached.
 
+The cache and the saves used to live under `vault-server`, before the project
+settled on one name. An existing install needs no attention: on startup the
+server moves each of those directories to its new path if nothing is there
+yet, and says so when it does. `LEGACY_CACHE_DIR` and `LEGACY_SAVE_ROOT` in
+`config.py`, and `migrate_legacy_state()` in `server.py`, can both be deleted
+once no deployment is old enough to need them.
+
 Run directly to test:
 ```
 .venv/bin/python server.py
 ```
 
 For the constantly-running setup this is meant for, install it as a systemd
-service instead — `vault-server.service` is included; adjust `WorkingDirectory`
+service instead — `games-galore-server.service` is included; adjust `WorkingDirectory`
 and `User`, drop it in `/etc/systemd/system/`, then:
 ```
 systemctl daemon-reload
-systemctl enable --now vault-server
+systemctl enable --now games-galore-server
 ```
 
 ## Expected library layout

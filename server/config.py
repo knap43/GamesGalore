@@ -10,12 +10,13 @@ LIBRARY_ROOT = Path("/mnt/game-library")
 # Defaults to a path under the current user's home directory rather
 # than /var/lib/ specifically so `python server.py` works unprivileged,
 # which is how this has been tested throughout. If you deploy this via
-# vault-server.service instead, that unit's `StateDirectory=` directive
-# creates and owns /var/lib/vault-server for you automatically — in
-# that case, point this at /var/lib/vault-server/cache instead and you
-# won't need sudo for that either, since systemd sets it up ahead of
-# the service ever running.
-CACHE_DIR = Path.home() / ".cache" / "vault-server"
+# games-galore-server.service instead, that unit's `StateDirectory=`
+# directive creates and owns /var/lib/games-galore-server for you
+# automatically — in that case, point this at
+# /var/lib/games-galore-server/cache instead and you won't need sudo
+# for that either, since systemd sets it up ahead of the service ever
+# running.
+CACHE_DIR = Path.home() / ".cache" / "games-galore-server"
 
 # How large the conversion cache may grow before the least recently
 # used .nsp files are swept out of it. Everything in there can be
@@ -31,13 +32,22 @@ CACHE_MAX_BYTES = 40 * 1024 * 1024 * 1024
 # whereas a save is the only copy of someone's progress. Losing the
 # cache costs CPU; losing this costs the playthrough. Point it at
 # something you actually back up.
-SAVE_ROOT = Path.home() / ".local" / "share" / "vault-server" / "saves"
+SAVE_ROOT = Path.home() / ".local" / "share" / "games-galore-server" / "saves"
 
 # How many versions of a game's save to keep before the oldest is
 # pruned. The point of keeping more than one is recovering from a bad
 # sync — an overwrite by a stale device, a crash mid-write — which is
 # only useful if you notice within a few sessions.
 SAVE_VERSIONS_KEPT = 10
+
+# Where these two lived before the project settled on one name. A
+# checkout that is simply updated would otherwise start writing to a
+# fresh directory and appear to have lost every stored save, so the
+# server moves them across once, on startup, if the new path doesn't
+# exist yet. Delete these and the migration once no deployment is old
+# enough to need it.
+LEGACY_CACHE_DIR = Path.home() / ".cache" / "vault-server"
+LEGACY_SAVE_ROOT = Path.home() / ".local" / "share" / "vault-server" / "saves"
 
 HOST = "0.0.0.0"
 PORT = 8420

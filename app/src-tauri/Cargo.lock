@@ -983,6 +983,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "games-galore"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tokio",
+ "urlencoding",
+]
+
+[[package]]
 name = "gdk"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4247,24 +4265,6 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "vault-backend"
-version = "0.1.0"
-dependencies = [
- "flate2",
- "futures-util",
- "libc",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tokio",
- "urlencoding",
 ]
 
 [[package]]

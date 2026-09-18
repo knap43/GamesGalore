@@ -2,6 +2,7 @@ mod catalog_cache;
 mod dependencies;
 mod install_state;
 mod launcher;
+mod migrate;
 mod saves;
 mod server;
 mod settings;
@@ -9,6 +10,13 @@ mod settings;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Before any command can read installs.json or settings.json,
+        // so a user whose data still sits under the old identifier
+        // doesn't briefly look like a user with no data at all.
+        .setup(|app| {
+            migrate::move_legacy_app_data(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             server::fetch_library,
             catalog_cache::get_cached_library,

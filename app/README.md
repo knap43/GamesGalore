@@ -1,7 +1,7 @@
 # Games Galore backend (Rust/Tauri)
 
 The desktop client: a Tauri app wrapping the plain HTML/CSS/JS frontend in
-`frontend/`, talking to the Python library server (`../vault-server/`) over
+`frontend/`, talking to the Python library server (`../server/`) over
 HTTP. It has no local knowledge of where the library lives — only a base URL
 from settings — and never touches the library filesystem or runs `nsz` itself.
 
@@ -345,10 +345,10 @@ for the small set of demo-only differences that copy carries.
 ### 1. The library server, first
 
 The Tauri app is useless without it. On the machine with the mounted drive
-(`../vault-server/`):
+(`../server/`):
 
 ```
-cd vault-server
+cd server
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -363,7 +363,7 @@ directly to confirm it works:
 Then `curl http://<that machine's LAN IP>:8420/library` from another machine on
 the network — you should get back JSON. If this doesn't work, nothing
 downstream will either, so don't move on until it does. For the
-"constantly running" setup this is meant for, install `vault-server.service` as
+"constantly running" setup this is meant for, install `games-galore-server.service` as
 a systemd unit instead of running it by hand (see that project's README).
 
 ### 2. Prerequisites
@@ -427,7 +427,7 @@ and try `GDK_BACKEND=x11` to force XWayland for just this app.
 ### 4. Run and build
 
 ```
-cd tauri-backend/src-tauri
+cd app/src-tauri
 cargo tauri dev
 ```
 
@@ -457,7 +457,7 @@ separate flags needed versus `cargo tauri dev`.
 Nothing works until you open Settings (the gear at the bottom of the sidebar)
 and fill in:
 
-- **Library server address** — the vault-server machine's LAN address, e.g.
+- **Library server address** — the library server machine's LAN address, e.g.
   `http://192.168.1.20:8420`
 - **Install directory** — use the Browse button; it's a real native folder picker
 - **Each emulator's command/args** — see below

@@ -36,6 +36,8 @@ from config import (
     CACHE_DIR,
     CACHE_MAX_BYTES,
     HOST,
+    LEGACY_CACHE_DIR,
+    LEGACY_SAVE_ROOT,
     LIBRARY_ROOT,
     PORT,
     SAVE_ROOT,
@@ -54,6 +56,38 @@ STATIC_MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mkv", ".w
 # anything approaching this is a sign the wrong directory got archived.
 # Its real job is to stop one bad client filling the disk.
 MAX_SAVE_BYTES = 512 * 1024 * 1024
+
+
+def _migrate_legacy_dir(legacy: Path, current: Path) -> bool:
+    """
+    Moves a directory left behind by the old name into its new home,
+    once, and only when there is nothing at the new path to overwrite.
+
+    The saves are the reason this exists: they are the one thing here
+    that cannot be regenerated, and a checkout that was merely updated
+    would otherwise come up pointing at an empty directory and look for
+    all the world like it had lost them. Returns whether anything moved,
+    so the caller can say so rather than doing it silently.
+    """
+    if current.exists() or not legacy.is_dir():
+        return False
+    try:
+        current.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(current))
+    except OSError:
+        # Better to carry on with an empty directory than to refuse to
+        # start; the old one is still there to be moved by hand.
+        return False
+    return True
+
+
+def migrate_legacy_state() -> None:
+    for legacy, current, what in (
+        (LEGACY_SAVE_ROOT, SAVE_ROOT, "cloud saves"),
+        (LEGACY_CACHE_DIR, CACHE_DIR, "conversion cache"),
+    ):
+        if _migrate_legacy_dir(legacy, current):
+            print(f"moved {what} from {legacy} to {current}")
 
 
 def _reload_catalog() -> None:
@@ -370,5 +404,6 @@ def _safe_join(base: Path, filename: str) -> Path:
 
 
 if __name__ == "__main__":
+    migrate_legacy_state()
     _reload_catalog()
     app.run(host=HOST, port=PORT)

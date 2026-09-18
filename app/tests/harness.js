@@ -19,7 +19,7 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const APP_HTML = path.join(__dirname, '..', 'frontend', 'index.html');
-const DEMO_HTML = path.join(__dirname, '..', '..', '..', '..', 'docs', 'index.html');
+const DEMO_HTML = path.join(__dirname, '..', '..', 'docs', 'index.html');
 
 let fails = 0;
 let total = 0;
