@@ -31,6 +31,17 @@ pub enum InstallStatus {
     Downloading {
         file: String,
         pct: u8,
+        /// Transfer rate, smoothed; 0 before there is anything to
+        /// measure. `default` so an installs.json written before this
+        /// existed still loads — a persisted Downloading status is how
+        /// an install interrupted by the app closing is recognised.
+        #[serde(default)]
+        bytes_per_sec: u64,
+        /// Seconds remaining at the current rate, or None when that
+        /// cannot honestly be said: no rate yet, or nothing left to
+        /// predict against.
+        #[serde(default)]
+        eta_secs: Option<u64>,
     },
     Installed {
         local_dir: PathBuf,
@@ -130,10 +141,12 @@ fn set_status(app: &AppHandle, id: &str, status: InstallStatus) -> Result<(), St
 ///
 /// Best-effort by design — a dropped progress frame is not a reason to
 /// fail an install that is otherwise proceeding.
-fn emit_progress(app: &AppHandle, id: &str, file: &str, pct: u8) {
+fn emit_progress(app: &AppHandle, id: &str, file: &str, progress: &Progress) {
     let status = InstallStatus::Downloading {
         file: file.to_string(),
-        pct,
+        pct: progress.pct(),
+        bytes_per_sec: progress.rate.bytes_per_sec(),
+        eta_secs: progress.rate.eta(progress.done_bytes, progress.total_bytes),
     };
     let _ = app.emit("install:status", (id, &status));
 }
@@ -232,11 +245,7 @@ pub async fn install_game(
     // 100% and reset over and over while telling you nothing about how
     // far along the install actually is.
     let total_bytes: u64 = game.files.iter().map(|f| f.size_bytes).sum();
-    let mut progress = Progress {
-        done_bytes: 0,
-        total_bytes,
-        last_pct: -1,
-    };
+    let mut progress = Progress::new(total_bytes);
 
     // Persisted once, so an install interrupted by the app closing is
     // still recognisable as one on next launch. Everything after this
@@ -247,6 +256,8 @@ pub async fn install_game(
         InstallStatus::Downloading {
             file: game.files[0].filename.clone(),
             pct: 0,
+            bytes_per_sec: 0,
+            eta_secs: None,
         },
     )?;
 
@@ -282,8 +293,7 @@ pub async fn install_game(
         }
         // Whatever the archive attempt counted toward progress is not
         // on disk, so the per-file path below starts from zero again.
-        progress.done_bytes = 0;
-        progress.last_pct = -1;
+        progress = Progress::new(total_bytes);
     }
 
     for file in &game.files {
@@ -403,9 +413,107 @@ struct Progress {
     /// Last percentage actually emitted, so a large file doesn't emit
     /// thousands of identical frames. -1 guarantees the first one does.
     last_pct: i16,
+    /// The rate, and what it was measured from. Bytes skipped by resume
+    /// are deliberately not counted here — they arrived instantly, on a
+    /// previous run, and folding them in would report a speed nobody's
+    /// network is achieving.
+    rate: Rate,
+}
+
+/// A smoothed transfer rate.
+///
+/// The instantaneous rate between two samples is far too noisy to put
+/// on screen — chunk sizes vary, the disk flushes, the server pauses to
+/// convert an .nsz — so each sample is blended into a running average.
+/// The weight is a compromise between a number that jitters and one
+/// that takes ten seconds to notice a stall.
+struct Rate {
+    /// Bytes actually transferred since the last sample.
+    since_sample: u64,
+    sampled_at: std::time::Instant,
+    /// Smoothed bytes per second, or None until there is a sample.
+    smoothed: Option<f64>,
+    emitted_at: std::time::Instant,
+}
+
+impl Rate {
+    /// How much of a new sample is taken; the rest is history.
+    const WEIGHT: f64 = 0.35;
+    /// A sample shorter than this measures scheduling noise rather than
+    /// a transfer rate.
+    const MIN_SAMPLE: std::time::Duration = std::time::Duration::from_millis(400);
+    /// Speed is worth re-stating even when the percentage hasn't moved
+    /// — on a large title a percent can take a minute, and a frozen
+    /// number reads as a frozen download.
+    const MIN_EMIT: std::time::Duration = std::time::Duration::from_millis(500);
+
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            since_sample: 0,
+            sampled_at: now,
+            smoothed: None,
+            emitted_at: now,
+        }
+    }
+
+    fn record(&mut self, bytes: u64) {
+        self.since_sample += bytes;
+    }
+
+    /// Folds the bytes seen since the last sample into the average, if
+    /// enough time has passed to make that meaningful.
+    fn sample(&mut self, now: std::time::Instant) {
+        let elapsed = now.duration_since(self.sampled_at);
+        if elapsed < Self::MIN_SAMPLE {
+            return;
+        }
+        let instant = self.since_sample as f64 / elapsed.as_secs_f64();
+        self.smoothed = Some(match self.smoothed {
+            Some(previous) => previous * (1.0 - Self::WEIGHT) + instant * Self::WEIGHT,
+            None => instant,
+        });
+        self.since_sample = 0;
+        self.sampled_at = now;
+    }
+
+    fn bytes_per_sec(&self) -> u64 {
+        self.smoothed.unwrap_or(0.0).max(0.0) as u64
+    }
+
+    /// Seconds left at the current rate, or None when saying anything
+    /// would be a guess: no rate measured yet, or a total that is
+    /// already behind us (a .nsz decompressing past its listed size).
+    fn eta(&self, done: u64, total: u64) -> Option<u64> {
+        let rate = self.smoothed.filter(|r| *r > 1.0)?;
+        let remaining = total.checked_sub(done).filter(|r| *r > 0)?;
+        Some((remaining as f64 / rate).round() as u64)
+    }
 }
 
 impl Progress {
+    fn new(total_bytes: u64) -> Self {
+        Self {
+            done_bytes: 0,
+            total_bytes,
+            last_pct: -1,
+            rate: Rate::new(),
+        }
+    }
+
+    /// Whether the frontend should hear about this chunk: the
+    /// percentage moved, or enough time has passed that the speed on
+    /// screen is stale.
+    fn should_emit(&mut self, now: std::time::Instant) -> bool {
+        let pct = self.pct() as i16;
+        if pct != self.last_pct || now.duration_since(self.rate.emitted_at) >= Rate::MIN_EMIT {
+            self.last_pct = pct;
+            self.rate.emitted_at = now;
+            return true;
+        }
+        false
+    }
+
     /// The catalog's sizes are what the files occupy in the source
     /// library, and a .nsz decompresses on the way out, so the bytes
     /// arriving can exceed the total that was advertised. Clamped
@@ -495,11 +603,12 @@ async fn download_archive(
         let chunk = chunk.map_err(|e| e.to_string())?;
         bytes.extend_from_slice(&chunk);
         progress.done_bytes += chunk.len() as u64;
+        progress.rate.record(chunk.len() as u64);
 
-        let pct = progress.pct() as i16;
-        if pct != progress.last_pct {
-            progress.last_pct = pct;
-            emit_progress(app, game_id, "downloading the whole title", pct as u8);
+        let now = std::time::Instant::now();
+        progress.rate.sample(now);
+        if progress.should_emit(now) {
+            emit_progress(app, game_id, "downloading the whole title", progress);
         }
     }
 
@@ -637,8 +746,11 @@ async fn download_file(
             // Counted toward the title's progress all the same: the
             // bytes are there, and a resumed install that reported 0%
             // while skipping nine-tenths of its files would be lying.
+            // Not recorded as transferred: these bytes arrived on a
+            // previous run, and folding them into the rate would put a
+            // speed on screen that nobody's network is achieving.
             progress.done_bytes += expected.unwrap_or(0);
-            emit_progress(app, game_id, &file.filename, progress.pct());
+            emit_progress(app, game_id, &file.filename, progress);
             return Ok(false);
         }
         Resume::From(offset) => offset,
@@ -698,8 +810,8 @@ async fn download_file(
     // Emitted once per file regardless of whether the overall
     // percentage moved, so the name on screen keeps up while a long
     // tail of small files goes by.
-    progress.done_bytes += start;
-    emit_progress(app, game_id, &file.filename, progress.pct());
+    progress.done_bytes += start; // already on disk from an earlier run
+    emit_progress(app, game_id, &file.filename, progress);
 
     let mut stream = response.bytes_stream();
     let mut written: u64 = start;
@@ -713,11 +825,12 @@ async fn download_file(
         out.write_all(&chunk).await.map_err(|e| e.to_string())?;
         written += chunk.len() as u64;
         progress.done_bytes += chunk.len() as u64;
+        progress.rate.record(chunk.len() as u64);
 
-        let pct = progress.pct() as i16;
-        if pct != progress.last_pct {
-            progress.last_pct = pct;
-            emit_progress(app, game_id, &file.filename, pct as u8);
+        let now = std::time::Instant::now();
+        progress.rate.sample(now);
+        if progress.should_emit(now) {
+            emit_progress(app, game_id, &file.filename, progress);
         }
     }
 
@@ -871,11 +984,94 @@ mod tests {
     use super::*;
 
     fn progress(done: u64, total: u64) -> Progress {
-        Progress {
-            done_bytes: done,
-            total_bytes: total,
-            last_pct: -1,
-        }
+        let mut p = Progress::new(total);
+        p.done_bytes = done;
+        p
+    }
+
+    /// A Rate with a known smoothed value, for the arithmetic that
+    /// doesn't need real elapsed time to test.
+    fn rate_of(bytes_per_sec: f64) -> Rate {
+        let mut rate = Rate::new();
+        rate.smoothed = Some(bytes_per_sec);
+        rate
+    }
+
+    #[test]
+    fn a_rate_is_smoothed_rather_than_reported_raw() {
+        use std::time::{Duration, Instant};
+
+        // Two very different seconds: 10 MB then 1 MB. The number on
+        // screen should move toward the slower one without leaping to
+        // it, or a download over a busy link reads as a fault.
+        let start = Instant::now();
+        let mut rate = Rate::new();
+        rate.sampled_at = start;
+
+        rate.record(10_000_000);
+        rate.sample(start + Duration::from_secs(1));
+        assert_eq!(rate.bytes_per_sec(), 10_000_000);
+
+        rate.record(1_000_000);
+        rate.sample(start + Duration::from_secs(2));
+        let after = rate.bytes_per_sec();
+        assert!(
+            after < 10_000_000 && after > 1_000_000,
+            "expected something between the two, got {after}"
+        );
+    }
+
+    #[test]
+    fn a_sample_too_short_to_mean_anything_is_ignored() {
+        use std::time::{Duration, Instant};
+
+        let start = Instant::now();
+        let mut rate = Rate::new();
+        rate.sampled_at = start;
+        rate.record(50_000);
+        rate.sample(start + Duration::from_millis(20));
+        assert_eq!(rate.bytes_per_sec(), 0, "20ms measures scheduling noise");
+        // And the bytes are not lost — they count toward the next one.
+        rate.sample(start + Duration::from_secs(1));
+        assert_eq!(rate.bytes_per_sec(), 50_000);
+    }
+
+    #[test]
+    fn an_eta_is_the_remainder_at_the_current_rate() {
+        let rate = rate_of(2_000_000.0);
+        assert_eq!(rate.eta(0, 10_000_000), Some(5));
+        assert_eq!(rate.eta(8_000_000, 10_000_000), Some(1));
+    }
+
+    #[test]
+    fn no_eta_is_offered_when_there_is_nothing_to_base_one_on() {
+        // Nothing measured yet.
+        assert_eq!(Rate::new().eta(0, 10_000_000), None);
+        // Finished, or past a total the catalog under-predicted, which
+        // is every .nsz: there is no remainder to divide.
+        assert_eq!(rate_of(1_000.0).eta(10_000_000, 10_000_000), None);
+        assert_eq!(rate_of(1_000.0).eta(12_000_000, 10_000_000), None);
+        // A rate so low it would predict a wait measured in days says
+        // nothing rather than something absurd.
+        assert_eq!(rate_of(0.5).eta(0, 10_000_000), None);
+    }
+
+    #[test]
+    fn progress_is_emitted_on_a_clock_as_well_as_on_a_percentage() {
+        use std::time::{Duration, Instant};
+
+        let start = Instant::now();
+        let mut p = Progress::new(1_000_000);
+        p.rate.emitted_at = start;
+
+        assert!(p.should_emit(start), "the first frame always goes");
+        assert!(
+            !p.should_emit(start),
+            "the same percentage a moment later does not"
+        );
+        // On a large title a single percent can take a minute, and a
+        // speed frozen for that long reads as a stalled download.
+        assert!(p.should_emit(start + Duration::from_millis(600)));
     }
 
     #[test]

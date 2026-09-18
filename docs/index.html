@@ -828,6 +828,8 @@
   }
   .install-progress-track {
     flex: 1;
+    min-width: 80px; /* the bar is the point; it never collapses to
+                        nothing to make room for a long filename */
     height: 6px;
     border-radius: var(--radius-pill);
     background: var(--bg-card);
@@ -841,10 +843,26 @@
     border-radius: var(--radius-pill);
     transition: width 0.25s ease;
   }
+  /* Two parts, shrinking in a deliberate order. A PC game's file can
+     be a long nested path, and on a narrow window something has to
+     give — it should be the end of that path rather than the speed,
+     which is the part somebody is actually watching. */
   .install-progress-label {
-    flex-shrink: 0;
+    min-width: 0;
     font-size: 12px;
     color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl;   /* clip the start of the path, not the percentage */
+    text-align: right;
+  }
+  .install-progress-label > span { direction: ltr; unicode-bidi: embed; }
+  .install-progress-stats {
+    flex-shrink: 0;
+    font-size: 12px;
+    color: var(--text-faint);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -1337,6 +1355,7 @@
           <div class="install-progress-fill" id="install-progress-fill"></div>
         </div>
         <span class="install-progress-label" id="install-progress-label"></span>
+        <span class="install-progress-stats" id="install-progress-stats"></span>
         <button class="browse-button" id="cancel-install-button" type="button">Cancel</button>
       </div>
 
@@ -1769,7 +1788,10 @@ function simulateDemoInstall(game) {
   let fileIdx = 0;
   let pct = 0;
 
-  applyInstallStatus(game, { status: 'downloading', file: files[0].filename, pct: 0 });
+  applyInstallStatus(game, {
+    status: 'downloading', file: files[0].filename, pct: 0,
+    bytes_per_sec: 0, eta_secs: null,
+  });
   refreshInstallDependentUI(game.id);
 
   const tick = () => {
@@ -1788,7 +1810,16 @@ function simulateDemoInstall(game) {
       }
       pct = 0;
     }
-    applyInstallStatus(game, { status: 'downloading', file: files[fileIdx].filename, pct: Math.round(pct) });
+    applyInstallStatus(game, {
+      status: 'downloading',
+      file: files[fileIdx].filename,
+      pct: Math.round(pct),
+      // Invented, like everything else in the demo, but invented in
+      // the shape the real thing reports: a rate that wobbles and an
+      // estimate derived from it.
+      bytes_per_sec: 40e6 + Math.random() * 25e6,
+      eta_secs: Math.round((100 - pct) * 1.4) + 3,
+    });
     refreshInstallDependentUI(game.id);
     setTimeout(tick, 180 + Math.random() * 220);
   };
@@ -2671,6 +2702,34 @@ function formatSize(sizeGB) {
   return `${sizeGB.toFixed(1)} GB`;
 }
 
+/* Rates, for people. Decimal megabytes rather than mebibytes: this
+   number sits next to what a router or a browser would tell you, and
+   agreeing with those matters more here than agreeing with the way the
+   file sizes elsewhere in this app are counted. */
+function formatRate(bytesPerSec) {
+  if (!bytesPerSec || bytesPerSec < 1) return '';
+  if (bytesPerSec >= 1e9) return `${(bytesPerSec / 1e9).toFixed(1)} GB/s`;
+  if (bytesPerSec >= 1e6) return `${(bytesPerSec / 1e6).toFixed(1)} MB/s`;
+  if (bytesPerSec >= 1e3) return `${Math.round(bytesPerSec / 1e3)} kB/s`;
+  return `${Math.round(bytesPerSec)} B/s`;
+}
+
+/* Deliberately coarse. A countdown accurate to the second on a number
+   that swings with every stall is false precision, and "about 2 hours"
+   is what someone deciding whether to wait actually needs. */
+function formatEta(seconds) {
+  if (typeof seconds !== 'number' || seconds < 0) return '';
+  if (seconds < 10) return 'almost done';
+  if (seconds < 60) return `${Math.round(seconds / 5) * 5}s left`;
+  if (seconds < 3600) {
+    const minutes = Math.round(seconds / 60);
+    return `${minutes} min left`;
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return minutes ? `${hours}h ${minutes}m left` : `${hours}h left`;
+}
+
 function cardSubLine(g) {
   const segs = [];
   if (g.genre) segs.push(g.genre);
@@ -2884,6 +2943,7 @@ function renderCtaRow(game) {
   const progressEl = document.getElementById('install-progress');
   const progressFill = document.getElementById('install-progress-fill');
   const progressLabel = document.getElementById('install-progress-label');
+  const progressStats = document.getElementById('install-progress-stats');
   const errorEl = document.getElementById('install-error');
 
   errorEl.style.display = game.installError ? 'block' : 'none';
@@ -2912,9 +2972,21 @@ function renderCtaRow(game) {
     progressFill.style.width = queued ? '0%' : `${pct}%`;
     // A queued title has transferred nothing, so a percentage would be
     // a lie dressed as information. Say what it's actually doing.
-    progressLabel.textContent = queued
-      ? 'Waiting for another install to finish'
-      : (game.installProgress.file ? `${game.installProgress.file} — ${pct}%` : `${pct}%`);
+    if (queued) {
+      progressLabel.textContent = 'Waiting for another install to finish';
+      progressStats.textContent = '';
+    } else {
+      progressLabel.innerHTML = game.installProgress.file
+        ? `<span>${game.installProgress.file} — ${pct}%</span>`
+        : `<span>${pct}%</span>`;
+      // Each part is dropped when it has nothing to say rather than
+      // shown as a zero: a rate of 0 B/s next to a moving bar is worse
+      // than no rate at all.
+      progressStats.textContent = [
+        formatRate(game.installProgress.bytes_per_sec),
+        formatEta(game.installProgress.eta_secs),
+      ].filter(Boolean).join(' · ');
+    }
   } else if (game.installed) {
     playBtn.disabled = false;
     playBtn.innerHTML = `<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg> Play`;

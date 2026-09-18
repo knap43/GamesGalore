@@ -41,6 +41,23 @@ install actually is. Because a `.nsz` decompresses on the way out, the bytes
 arriving can exceed the total the catalog advertised, so the percentage is
 clamped rather than allowed to overshoot.
 
+Progress carries a transfer rate and an estimate of what is left. The
+instantaneous rate between two chunks is far too noisy to put on screen — chunk
+sizes vary, the disk flushes, the server pauses to convert an `.nsz` — so each
+sample is blended into a running average, and samples shorter than 400ms are
+ignored as measuring scheduling noise rather than a network. Bytes that resume
+skipped are counted toward the percentage but deliberately not toward the rate:
+they arrived on a previous run, and folding them in would report a speed nobody's
+network is achieving.
+
+A frame is emitted when the percentage moves *or* half a second has passed,
+since on a large title a single percent can take a minute and a speed frozen for
+that long reads as a stalled download. No estimate is offered until there is a
+rate to base one on, and none is offered once the bytes transferred pass the
+total the catalog predicted — which happens on every `.nsz`. Nothing is shown in
+place of either; a rate of 0 B/s beside a moving bar is worse than no rate at
+all.
+
 Only transitions are written to `installs.json` — an install starting,
 finishing, failing or being cleared. Progress is emitted to the frontend
 without touching it. Persisting each tick would have meant a read-modify-write

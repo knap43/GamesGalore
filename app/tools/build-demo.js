@@ -102,7 +102,10 @@ const PATCHES = [
   let fileIdx = 0;
   let pct = 0;
 
-  applyInstallStatus(game, { status: 'downloading', file: files[0].filename, pct: 0 });
+  applyInstallStatus(game, {
+    status: 'downloading', file: files[0].filename, pct: 0,
+    bytes_per_sec: 0, eta_secs: null,
+  });
   refreshInstallDependentUI(game.id);
 
   const tick = () => {
@@ -121,7 +124,16 @@ const PATCHES = [
       }
       pct = 0;
     }
-    applyInstallStatus(game, { status: 'downloading', file: files[fileIdx].filename, pct: Math.round(pct) });
+    applyInstallStatus(game, {
+      status: 'downloading',
+      file: files[fileIdx].filename,
+      pct: Math.round(pct),
+      // Invented, like everything else in the demo, but invented in
+      // the shape the real thing reports: a rate that wobbles and an
+      // estimate derived from it.
+      bytes_per_sec: 40e6 + Math.random() * 25e6,
+      eta_secs: Math.round((100 - pct) * 1.4) + 3,
+    });
     refreshInstallDependentUI(game.id);
     setTimeout(tick, 180 + Math.random() * 220);
   };

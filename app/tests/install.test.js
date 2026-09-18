@@ -50,6 +50,9 @@ async function boot() {
 
 const cta = doc => doc.getElementById('cta-button').textContent.trim();
 const label = doc => doc.getElementById('install-progress-label').textContent;
+const stats = doc => doc.getElementById('install-progress-stats').textContent;
+// What someone reads across the row, in order.
+const wholeLabel = doc => [label(doc), stats(doc)].filter(Boolean).join(' · ');
 const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
 
 (async () => {
@@ -69,6 +72,7 @@ const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
     check('a queued title says it is queued', cta(doc), 'Queued');
     check('...and says what it is waiting for',
           label(doc), 'Waiting for another install to finish');
+    check('...with no rate beside it, since nothing is transferring', stats(doc), '');
     check('...offering no misleading percentage',
           doc.getElementById('install-progress-fill').style.width, '0%');
     check('...and can still be cancelled',
@@ -93,11 +97,17 @@ const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
 
     status('PC/Tidebreaker', { status: 'queued' });
     await sleep(60);
-    status('PC/Tidebreaker', { status: 'downloading', file: 'game.bin', pct: 41 });
+    status('PC/Tidebreaker', {
+      status: 'downloading', file: 'game.bin', pct: 41,
+      bytes_per_sec: 12_400_000, eta_secs: 214,
+    });
     await sleep(60);
 
     check('a transferring title stops saying it is queued', cta(doc), 'Downloading…');
-    check('...and names the file and the percentage', label(doc), 'game.bin — 41%');
+    check('...and names the file, the percentage, the rate and the wait',
+          wholeLabel(doc), 'game.bin — 41% · 12.4 MB/s · 4 min left');
+    check('...with the numbers kept apart from the filename, so a long path\n        gives way before they do',
+          [label(doc), stats(doc)], ['game.bin — 41%', '12.4 MB/s · 4 min left']);
     check('...against the whole title, not the file',
           doc.getElementById('install-progress-fill').style.width, '41%');
 
@@ -141,6 +151,38 @@ const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
     check('a truncated transfer is reported too',
           doc.getElementById('install-error').textContent.includes('arrived incomplete'), true);
     check('no uncaught errors around a failure', errors, []);
+  }
+
+  // === what the speed reads like ======================================
+  {
+    const { doc, status } = await boot();
+    await openGame(doc, 'Tidebreaker');
+    doc.getElementById('cta-button').click();
+    await sleep(60);
+
+    const shows = async (payload) => {
+      status('PC/Tidebreaker', { status: 'downloading', file: 'game.bin', pct: 50, ...payload });
+      await sleep(60);
+      return wholeLabel(doc);
+    };
+
+    check('a slow link is stated in kB/s',
+          await shows({ bytes_per_sec: 240_000, eta_secs: 7200 }),
+          'game.bin — 50% · 240 kB/s · 2h left');
+    check('a fast one in MB/s, to one decimal',
+          await shows({ bytes_per_sec: 118_000_000, eta_secs: 45 }),
+          'game.bin — 50% · 118.0 MB/s · 45s left');
+    check('the last seconds say so rather than counting down',
+          await shows({ bytes_per_sec: 9_000_000, eta_secs: 3 }),
+          'game.bin — 50% · 9.0 MB/s · almost done');
+    // Before the first sample there is no rate and no estimate, and a
+    // 0 B/s beside a moving bar is worse than saying nothing.
+    check('nothing is invented before there is a measurement',
+          await shows({ bytes_per_sec: 0, eta_secs: null }),
+          'game.bin — 50%');
+    check('an hour and a bit is said as such',
+          await shows({ bytes_per_sec: 3_000_000, eta_secs: 4500 }),
+          'game.bin — 50% · 3.0 MB/s · 1h 15m left');
   }
 
   finish();
