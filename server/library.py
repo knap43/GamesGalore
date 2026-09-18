@@ -32,6 +32,7 @@ here assumes a folder is uniformly one format or the other.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -41,6 +42,9 @@ KNOWN_PLATFORMS = {"PS1", "PS2", "PC", "Switch"}
 TRAILER_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 README_NAME = "README.md"
+# Optional, per game folder. Everything in it is optional too; anything
+# absent falls back to what the folder itself can be made to say.
+SIDECAR_NAME = "game.json"
 SWITCH_EXTENSIONS = {".nsz", ".nsp"}
 
 YEAR_RE = re.compile(r"\(([0-9]{4})\)\s*$")
@@ -106,6 +110,14 @@ class Game:
     screenshots: list = field(default_factory=list)    # list[str] (filenames)
     cover: Optional[str] = None                        # filename, or None if no images at all
     trailer: Optional[str] = None
+    # From an optional game.json; None/empty where there isn't one. The
+    # client already styles cards by genre and shows it on the card and
+    # in the detail header — until now that only ever worked for its
+    # own mock catalog, because nothing on this side had anywhere to
+    # put one.
+    genre: Optional[str] = None
+    tags: list = field(default_factory=list)           # list[str]
+    players: Optional[int] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -132,18 +144,62 @@ def _read_game_folder(game_dir: Path, platform: str) -> Optional[Game]:
     title = game_dir.name
     release_year, description = _read_readme(game_dir / README_NAME)
     screenshots = _find_screenshots(game_dir)
+    extra = _read_sidecar(game_dir / SIDECAR_NAME)
 
     return Game(
         id=f"{platform}/{title}",
-        title=title,
+        title=extra.get("title") or title,
         platform=platform,
-        release_year=release_year,
-        description=description,
+        # The sidecar wins where it says anything: it is the one place
+        # someone deliberately wrote a fact down, as against a year
+        # parsed out of a folder name.
+        release_year=extra.get("release_year", release_year),
+        description=extra.get("description") or description,
         files=_find_game_files(game_dir, platform),
         screenshots=screenshots,
         cover=_pick_cover(screenshots),
         trailer=_find_trailer(game_dir),
+        genre=extra.get("genre"),
+        tags=extra.get("tags") or [],
+        players=extra.get("players"),
     )
+
+
+def _read_sidecar(path: Path) -> dict:
+    """
+    Reads an optional `game.json` beside a game's files.
+
+    Everything the catalog knows is otherwise inferred — the title from
+    the folder name, the year from a parenthesis in it, the description
+    from a README — which covers a library nobody wants to annotate and
+    leaves no way to say anything else at all. This is that way: genre,
+    tags, player count, and overrides for the three inferred fields.
+
+    Every key is optional, and a malformed or unreadable file is
+    treated as an absent one. A catalog that refuses to list a game
+    because somebody left a trailing comma in its metadata would be a
+    worse outcome than a game with no genre.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    out = {}
+    for key in ("title", "genre", "description"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()
+    for key in ("release_year", "players"):
+        value = data.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            out[key] = value
+    tags = data.get("tags")
+    if isinstance(tags, list):
+        out["tags"] = [t.strip() for t in tags if isinstance(t, str) and t.strip()]
+    return out
 
 
 def _pick_cover(screenshots: list) -> Optional[str]:
@@ -205,6 +261,7 @@ def _is_catalog_metadata(game_dir: Path, path: Path) -> bool:
         return False
     return (
         path.name == README_NAME
+        or path.name == SIDECAR_NAME
         or _is_trailer_file(path.name)
         or path.suffix.lower() in IMAGE_EXTENSIONS
     )

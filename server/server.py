@@ -25,17 +25,22 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import io
 import json
 import shutil
 import subprocess
+import time
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from flask import Flask, abort, jsonify, request, send_file, url_for
+from flask import Flask, Response, abort, jsonify, request, send_file, url_for
 
 from config import (
     CACHE_DIR,
     CACHE_MAX_BYTES,
+    CATALOG_TTL_SECONDS,
     HOST,
     LEGACY_CACHE_DIR,
     LEGACY_SAVE_ROOT,
@@ -50,6 +55,8 @@ from library import scan_library
 app = Flask(__name__)
 
 _catalog: dict = {}  # game id -> Game
+_catalog_signature: Optional[tuple] = None  # what the tree looked like when it was scanned
+_catalog_scanned_at: float = 0.0
 
 STATIC_MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mkv", ".webm"}
 
@@ -93,16 +100,73 @@ def migrate_legacy_state() -> None:
 
 
 def _reload_catalog() -> None:
-    global _catalog
+    global _catalog, _catalog_signature, _catalog_scanned_at
     _catalog = {g.id: g for g in scan_library(LIBRARY_ROOT)}
+    _catalog_signature = _library_signature()
+    _catalog_scanned_at = time.time()
+
+
+def _library_signature() -> tuple:
+    """
+    A cheap fingerprint of the library's shape: every platform and game
+    directory, with its modification time.
+
+    Two levels deep and no further, which is the whole point. A full
+    scan walks every PC game's entire tree to size it, and on a large
+    library that is seconds; this stats a few hundred directories and
+    is imperceptible. A directory's mtime moves when anything is added
+    to or removed from it, so a new game, a deleted one and a renamed
+    one are all caught.
+
+    What it does not catch is a file *edited* in place several levels
+    down — an .exe replaced by a patch, say — which would change a
+    game's size without changing any directory it is counted under.
+    The TTL below is the backstop for that, and /rescan is the answer
+    for someone who knows they have just changed something.
+    """
+    entries = []
+    try:
+        platforms = sorted(LIBRARY_ROOT.iterdir())
+    except OSError:
+        return ()
+    for platform_dir in platforms:
+        if not platform_dir.is_dir():
+            continue
+        try:
+            entries.append((platform_dir.name, platform_dir.stat().st_mtime))
+            for game_dir in sorted(platform_dir.iterdir()):
+                if game_dir.is_dir():
+                    entries.append((f"{platform_dir.name}/{game_dir.name}",
+                                    game_dir.stat().st_mtime))
+        except OSError:
+            continue
+    return tuple(entries)
+
+
+def _ensure_catalog() -> None:
+    """
+    Rescans only when something looks different, or when the cached
+    scan is old enough to be worth distrusting.
+
+    /library used to rescan the whole tree on every single call, which
+    on a large library made opening the app a multi-second wait — the
+    client now paints its installed titles from its own cache to hide
+    that, and this is the other half: making the wait short rather than
+    hiding it.
+    """
+    if not _catalog:
+        _reload_catalog()
+        return
+    if time.time() - _catalog_scanned_at > CATALOG_TTL_SECONDS:
+        _reload_catalog()
+        return
+    if _library_signature() != _catalog_signature:
+        _reload_catalog()
 
 
 @app.route("/library")
 def library_route():
-    # Rescans every call — simple and correct at ~500 titles. Worth
-    # swapping for a cached catalog plus a manual /rescan trigger (or a
-    # filesystem watcher) if this ever gets slow.
-    _reload_catalog()
+    _ensure_catalog()
 
     payload = []
     for game in _catalog.values():
@@ -161,6 +225,74 @@ def download_route(platform: str, title: str, filename: str):
         return send_file(source_path, conditional=True, as_attachment=True)
 
     return send_file(_get_or_convert(game_id, source_path), conditional=True, as_attachment=True)
+
+
+@app.route("/archive/<platform>/<title>")
+def archive_route(platform: str, title: str):
+    """
+    Every file of one game, as a single uncompressed tar, streamed.
+
+    A PC game is a tree of thousands of files, and installing one meant
+    thousands of HTTP requests — correct, and fine on a LAN, but each
+    one pays for a connection, a route lookup and a catalog hit, and
+    the sum of that dwarfed the transfer itself for small files. This
+    is the same bytes in one response.
+
+    Uncompressed on purpose: game files are already compressed, and
+    gzip would spend the server's CPU to make the transfer slower.
+
+    Conversion still happens per file, before the entry is written, so
+    a Switch title's .nsz arrives as the .nsp the client expects —
+    exactly as it does through /download. That is also why this can't
+    advertise a Content-Length: the converted sizes aren't known until
+    each one is produced, and guessing would be worse than streaming
+    without one.
+    """
+    game_id = f"{platform}/{title}"
+    game = _catalog.get(game_id)
+    if game is None:
+        abort(404, "unknown game id")
+
+    game_dir = _resolve_game_dir(game_id)
+
+    # Resolved before streaming starts. Once the first byte is out the
+    # status line is already sent, and a failure after that can only
+    # truncate the response — so anything that can abort cleanly is
+    # done here, while abort() still produces an error the client can
+    # read.
+    members = []
+    for entry in game.files:
+        source = _safe_join(game_dir, entry.filename)
+        if entry.needs_conversion:
+            members.append((entry.filename.replace(".nsz", ".nsp"),
+                            _get_or_convert(game_id, source)))
+        else:
+            members.append((entry.filename, source))
+
+    def stream():
+        # A tar written to a pipe-like object: each member is handed to
+        # tarfile, which writes it straight through to the buffer, and
+        # the buffer is drained after each one rather than accumulating
+        # the whole title in memory.
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w|") as archive:
+            for name, path in members:
+                archive.add(path, arcname=name, recursive=False)
+                chunk = buffer.getvalue()
+                if chunk:
+                    yield chunk
+                    buffer.seek(0)
+                    buffer.truncate()
+        # The closing blocks tarfile writes on exit.
+        tail = buffer.getvalue()
+        if tail:
+            yield tail
+
+    return Response(
+        stream(),
+        mimetype="application/x-tar",
+        headers={"Content-Disposition": f'attachment; filename="{title}.tar"'},
+    )
 
 
 def _get_or_convert(game_id: str, nsz_path: Path) -> Path:
@@ -251,6 +383,17 @@ def _prune_cache(limit: int = CACHE_MAX_BYTES) -> None:
                 directory.rmdir()
             except OSError:
                 pass
+
+
+@app.route("/rescan", methods=["POST"])
+def rescan_route():
+    """
+    Forces a rescan, for the case the signature check cannot see: a
+    file edited in place deep inside a game's tree. Cheap to call and
+    safe to call often — it reads the library and writes nothing.
+    """
+    _reload_catalog()
+    return jsonify({"games": len(_catalog)})
 
 
 @app.route("/status")

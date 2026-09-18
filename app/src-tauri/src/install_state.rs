@@ -250,6 +250,42 @@ pub async fn install_game(
         },
     )?;
 
+    // A title of many files is fetched in one request when there is
+    // nothing on disk to resume from. Both conditions matter: the
+    // archive is the fast path for a tree of thousands of small files,
+    // and re-fetching all of them is exactly the wrong thing to do to
+    // an install that was interrupted halfway.
+    let resuming = has_partial_install(&dest_dir).await;
+    if game.files.len() > ARCHIVE_THRESHOLD && !resuming {
+        match download_archive(&app, &game.id, &server_base, &dest_dir, &mut progress).await {
+            Ok(true) => {
+                set_status(
+                    &app,
+                    &game.id,
+                    InstallStatus::Installed {
+                        local_dir: dest_dir.clone(),
+                    },
+                )?;
+                crate::catalog_cache::remember(&app, &game);
+                return Ok(());
+            }
+            // The server has no archive endpoint — an older one, or
+            // something in front of it rewriting paths. Fall through
+            // to the per-file path rather than failing an install over
+            // an optimisation.
+            Ok(false) => {}
+            Err(e) if e == CANCELLED => return Ok(()),
+            Err(e) => {
+                set_status(&app, &game.id, InstallStatus::Failed { message: e.clone() })?;
+                return Err(e);
+            }
+        }
+        // Whatever the archive attempt counted toward progress is not
+        // on disk, so the per-file path below starts from zero again.
+        progress.done_bytes = 0;
+        progress.last_pct = -1;
+    }
+
     for file in &game.files {
         // Checked between files too, not just inside each file's own
         // streaming loop — a game with several small files could
@@ -386,6 +422,170 @@ impl Progress {
 /// completed normally. Cancellation isn't treated as an error — it's a
 /// deliberate, successful stop, and the caller shouldn't report it as
 /// a failure the way an actual network or server error would be.
+/// Whether anything is already in this title's install directory.
+///
+/// An interrupted install leaves the files it had finished, and the
+/// per-file path knows how to continue from them; the archive path
+/// does not, and would happily re-fetch several gigabytes that are
+/// already on disk.
+async fn has_partial_install(dest_dir: &Path) -> bool {
+    match fs::read_dir(dest_dir).await {
+        Ok(mut entries) => matches!(entries.next_entry().await, Ok(Some(_))),
+        Err(_) => false,
+    }
+}
+
+/// Above this many files, a title is fetched as one archive rather
+/// than one request per file. Below it the per-file path is no worse
+/// and keeps the properties the archive path cannot offer: per-file
+/// progress that names what is transferring, and resume.
+///
+/// Four is deliberately low. A Switch title is one to three files and
+/// stays on the per-file path; a PC game is thousands and does not.
+const ARCHIVE_THRESHOLD: usize = 4;
+
+/// Fetches an entire title as one tar and unpacks it as it arrives.
+///
+/// A PC game is a tree of thousands of files, and installing one meant
+/// thousands of HTTP requests — correct, and fine on a LAN, but each
+/// one pays for a connection, a route lookup and a catalog hit, and
+/// for a tree of small files that dwarfs the transfer itself.
+///
+/// Returns Ok(false) when the server has no archive endpoint (an older
+/// server, or one behind something that rewrites the path), so the
+/// caller can fall back to the per-file path rather than failing an
+/// install over an optimisation.
+async fn download_archive(
+    app: &AppHandle,
+    game_id: &str,
+    server_base: &str,
+    dest_dir: &Path,
+    progress: &mut Progress,
+) -> Result<bool, String> {
+    let url = format!(
+        "{}/archive/{}",
+        server_base.trim_end_matches('/'),
+        encode_path_segments(game_id),
+    );
+
+    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(false); // no such endpoint here; the caller has another way
+    }
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "server returned {status} fetching the archive: {}",
+            extract_error_detail(&body)
+        ));
+    }
+
+    // Buffered rather than unpacked from the stream: tar's reader wants
+    // a synchronous Read, and bridging an async byte stream into one
+    // means a thread and a channel for no benefit here — the bytes are
+    // going to disk in full either way, and this keeps cancellation
+    // and progress in one obvious place.
+    let mut stream = response.bytes_stream();
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        if cancelled_downloads().lock().unwrap().remove(game_id) {
+            return Err(CANCELLED.to_string());
+        }
+        let chunk = chunk.map_err(|e| e.to_string())?;
+        bytes.extend_from_slice(&chunk);
+        progress.done_bytes += chunk.len() as u64;
+
+        let pct = progress.pct() as i16;
+        if pct != progress.last_pct {
+            progress.last_pct = pct;
+            emit_progress(app, game_id, "downloading the whole title", pct as u8);
+        }
+    }
+
+    let dest = dest_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || unpack_archive(&bytes, &dest))
+        .await
+        .map_err(|e| format!("unpacking failed: {e}"))??;
+
+    Ok(true)
+}
+
+/// A sentinel rather than a status: cancellation travels back through
+/// the same Result as a real failure, and the caller has to be able to
+/// tell them apart without treating a deliberate stop as an error.
+const CANCELLED: &str = "__cancelled__";
+
+/// Unpacks the title archive, refusing any entry that would land
+/// outside the destination. tar permits absolute paths and `..`
+/// components, and this archive came off the network, so unpacking it
+/// blindly would let the server write anywhere the app can reach.
+fn unpack_archive(bytes: &[u8], dest: &Path) -> Result<(), String> {
+    let mut archive = tar::Archive::new(bytes);
+    for entry in archive.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(format!(
+                "the archive contains an unsafe path: {}",
+                path.display()
+            ));
+        }
+        let target = dest.join(&path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        entry.unpack(&target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// What to do about a file that is already partly on disk.
+#[derive(Debug, PartialEq)]
+enum Resume {
+    /// Already complete; don't ask the server for it at all.
+    Skip,
+    /// Ask for the rest of it from this offset.
+    From(u64),
+    /// Nothing usable on disk, or more than there should be; start over.
+    Restart,
+}
+
+/// An interrupted install used to begin again at the first file, which
+/// on a PC game of several thousand files meant re-downloading every
+/// one of them because the last had failed. The state to avoid that is
+/// already on disk — the only question is whether to trust it.
+///
+/// A file the size the catalog says it should be is complete. A shorter
+/// one is worth continuing. A longer one is not a file this install
+/// wrote, so it is replaced rather than appended to. Where the expected
+/// size isn't known — a `.nsz` the server decompresses on the way out,
+/// where the catalog's number describes the compressed original — a
+/// partial file is still worth continuing, since the server's range
+/// support answers what the catalog can't.
+fn resume_plan(existing: Option<u64>, expected: Option<u64>) -> Resume {
+    match (existing, expected) {
+        (None, _) | (Some(0), _) => Resume::Restart,
+        (Some(have), Some(want)) if have == want => Resume::Skip,
+        (Some(have), Some(want)) if have > want => Resume::Restart,
+        (Some(have), _) => Resume::From(have),
+    }
+}
+
+async fn request_file(url: &str, from: u64) -> Result<reqwest::Response, String> {
+    let request = reqwest::Client::new().get(url);
+    let request = if from > 0 {
+        request.header(reqwest::header::RANGE, format!("bytes={from}-"))
+    } else {
+        request
+    };
+    request.send().await.map_err(|e| e.to_string())
+}
+
 async fn download_file(
     app: &AppHandle,
     game_id: &str,
@@ -406,28 +606,6 @@ async fn download_file(
         encode_path_segments(&file.filename),
     );
 
-    let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
-
-    // Captured before the body is consumed. Content-Length is what the
-    // server says it is about to send, which is the only number that
-    // can be checked against what actually arrives; a body that came
-    // back encoded (compressed in transit) is decoded on the way in, so
-    // the two legitimately differ and the check is skipped there.
-    let declared_length = response.content_length();
-    let transfer_encoded = response
-        .headers()
-        .get(reqwest::header::CONTENT_ENCODING)
-        .is_some();
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "server returned {status} for {}: {}",
-            file.filename,
-            extract_error_detail(&body)
-        ));
-    }
     let dest_filename = if file.format == "nsz" {
         file.filename.replace(".nsz", ".nsp")
     } else {
@@ -443,17 +621,88 @@ async fn download_file(
             .await
             .map_err(|e| e.to_string())?;
     }
-    let mut out = fs::File::create(&dest_path)
-        .await
-        .map_err(|e| e.to_string())?;
+
+    // A converted file's final size is not the size the catalog carries
+    // — that describes the compressed .nsz — so there is nothing to
+    // compare against until the server tells us.
+    let expected = if file.needs_conversion {
+        None
+    } else {
+        Some(file.size_bytes)
+    };
+    let existing = fs::metadata(&dest_path).await.ok().map(|m| m.len());
+
+    let mut from = match resume_plan(existing, expected) {
+        Resume::Skip => {
+            // Counted toward the title's progress all the same: the
+            // bytes are there, and a resumed install that reported 0%
+            // while skipping nine-tenths of its files would be lying.
+            progress.done_bytes += expected.unwrap_or(0);
+            emit_progress(app, game_id, &file.filename, progress.pct());
+            return Ok(false);
+        }
+        Resume::From(offset) => offset,
+        Resume::Restart => 0,
+    };
+
+    let mut response = request_file(&url, from).await?;
+
+    // The server disagrees that there is anything left to send — the
+    // file on disk is at least as long as the one it has. Ask for the
+    // whole thing instead of guessing which of us is right.
+    if from > 0 && response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        from = 0;
+        response = request_file(&url, 0).await?;
+    }
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "server returned {status} for {}: {}",
+            file.filename,
+            extract_error_detail(&body)
+        ));
+    }
+
+    // A 200 to a range request means the server ignored it and is
+    // sending the file from the beginning, so what's on disk has to go.
+    let resuming = from > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let start = if resuming { from } else { 0 };
+
+    // Captured before the body is consumed. Content-Length is what the
+    // server says it is about to send, which is the only number that
+    // can be checked against what actually arrives; on a 206 it
+    // describes the remainder, so the total to expect is that plus
+    // what was already here. A body that came back encoded (compressed
+    // in transit) is decoded on the way in, so the two legitimately
+    // differ and the check is skipped there.
+    let declared_total = response.content_length().map(|len| len + start);
+    let transfer_encoded = response
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .is_some();
+
+    let mut out = if resuming {
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&dest_path)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        fs::File::create(&dest_path)
+            .await
+            .map_err(|e| e.to_string())?
+    };
 
     // Emitted once per file regardless of whether the overall
     // percentage moved, so the name on screen keeps up while a long
     // tail of small files goes by.
+    progress.done_bytes += start;
     emit_progress(app, game_id, &file.filename, progress.pct());
 
     let mut stream = response.bytes_stream();
-    let mut written: u64 = 0;
+    let mut written: u64 = start;
 
     while let Some(chunk) = stream.next().await {
         if cancelled_downloads().lock().unwrap().remove(game_id) {
@@ -487,14 +736,15 @@ async fn download_file(
     if let Err(message) = verify_transfer(
         &file.filename,
         written,
-        declared_length,
+        declared_total,
         file.size_bytes,
         file.needs_conversion,
         transfer_encoded,
     ) {
-        // The partial file is deleted rather than left in place: a
-        // retry would otherwise have to guess whether what's on disk
-        // is good, and a truncated game file is worse than none.
+        // The partial file is deleted rather than left in place: what
+        // is on disk disagrees with what the server said it was
+        // sending, so resuming from it later would compound the
+        // problem rather than fix it.
         let _ = fs::remove_file(&dest_path).await;
         return Err(message);
     }
@@ -758,6 +1008,114 @@ mod tests {
         // perfectly good transfer. The catalog size still applies.
         assert!(verify_transfer("game.exe", 1000, Some(300), 1000, false, true).is_ok());
         assert!(verify_transfer("game.exe", 900, Some(300), 1000, false, true).is_err());
+    }
+
+    #[test]
+    fn an_archive_unpacks_into_the_destination() {
+        let dir = std::env::temp_dir().join("gg-archive-unpack");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A tar shaped like the server's: a nested tree, built in
+        // memory so the test doesn't depend on the tar binary.
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, contents) in [
+            ("bin/game.exe", &b"executable"[..]),
+            ("data/pak01.vpk", &b"assets"[..]),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder.append_data(&mut header, name, contents).unwrap();
+        }
+        let bytes = builder.into_inner().unwrap();
+
+        unpack_archive(&bytes, &dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("bin/game.exe")).unwrap(),
+            "executable"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("data/pak01.vpk")).unwrap(),
+            "assets"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_archive_that_climbs_out_of_the_destination_is_refused() {
+        // Forged at the byte level. The tar crate refuses to *build* an
+        // archive containing `..`, which is exactly why this check
+        // matters: a hostile or buggy server is under no such
+        // obligation, so the guard has to face a real archive the safe
+        // API would never have produced.
+        let dir = std::env::temp_dir().join("gg-archive-escape");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for name in [&b"../escaped.txt"[..], &b"/etc/escaped.txt"[..]] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(4);
+            header.set_mode(0o644);
+            header.set_cksum();
+            header.as_old_mut().name[..name.len()].copy_from_slice(name);
+            header.set_cksum(); // recomputed now the name is in place
+
+            let mut raw = Vec::new();
+            raw.extend_from_slice(header.as_bytes());
+            let mut block = [0u8; 512];
+            block[..4].copy_from_slice(b"evil");
+            raw.extend_from_slice(&block);
+            raw.extend_from_slice(&[0u8; 1024]); // two empty blocks end a tar
+
+            let err = unpack_archive(&raw, &dir).unwrap_err();
+            assert!(
+                err.contains("unsafe path"),
+                "{}: {err}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        assert!(!dir.parent().unwrap().join("escaped.txt").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_complete_file_is_not_downloaded_again() {
+        // The point of the whole thing: an install that failed on its
+        // last file used to re-fetch the several thousand before it.
+        assert_eq!(resume_plan(Some(1000), Some(1000)), Resume::Skip);
+    }
+
+    #[test]
+    fn a_partial_file_is_continued() {
+        assert_eq!(resume_plan(Some(400), Some(1000)), Resume::From(400));
+    }
+
+    #[test]
+    fn a_file_longer_than_it_should_be_is_replaced() {
+        // Not something this install wrote, so appending to it would
+        // produce something stranger still.
+        assert_eq!(resume_plan(Some(1400), Some(1000)), Resume::Restart);
+    }
+
+    #[test]
+    fn nothing_on_disk_means_an_ordinary_download() {
+        assert_eq!(resume_plan(None, Some(1000)), Resume::Restart);
+        // A zero-length file is what File::create leaves behind when a
+        // transfer died immediately; there is nothing to resume from.
+        assert_eq!(resume_plan(Some(0), Some(1000)), Resume::Restart);
+    }
+
+    #[test]
+    fn a_converted_file_is_resumed_on_the_servers_word_rather_than_the_catalogs() {
+        // The catalog's size describes the .nsz, and what arrives is
+        // the decompressed .nsp, so "is it complete?" cannot be
+        // answered here — but "is there something to continue?" can.
+        assert_eq!(resume_plan(Some(2500), None), Resume::From(2500));
+        assert_eq!(resume_plan(None, None), Resume::Restart);
     }
 
     #[test]

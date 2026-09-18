@@ -49,6 +49,13 @@ SAVE_VERSIONS_KEPT = 10
 LEGACY_CACHE_DIR = Path.home() / ".cache" / "vault-server"
 LEGACY_SAVE_ROOT = Path.home() / ".local" / "share" / "vault-server" / "saves"
 
+# How long a cached catalog is trusted before it is rescanned anyway.
+# The directory-mtime check catches games added, removed or renamed
+# within a fraction of a second; this is the backstop for a file edited
+# in place several levels down, which no cheap check can see. POST
+# /rescan forces one immediately.
+CATALOG_TTL_SECONDS = 10 * 60
+
 # Shared secret for the save endpoints, which are the only writable
 # surface this server exposes. Empty means no check at all, which is
 # the default because a LAN tool that refuses to work until it is

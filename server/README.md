@@ -141,6 +141,67 @@ mix (one `.nsp`, two `.nsz`):
 }
 ```
 
+## Catalog caching
+
+`/library` used to rescan the entire tree on every call, which on a large
+library is seconds of an empty grid every time the app opens. It now rescans
+only when the library looks different or the cached scan is old.
+
+The check is a fingerprint of every platform and game directory with its
+modification time — two levels deep and no further. A full scan walks every PC
+game's whole tree to size it; this stats a few hundred directories and is
+imperceptible. A directory's mtime moves when anything is added to, removed from
+or renamed inside it, so new, deleted and renamed games are all caught
+immediately.
+
+What it cannot see is a file *edited in place* several levels down — an `.exe`
+replaced by a patch, say — which changes a game's size without changing any
+directory the check looks at. `CATALOG_TTL_SECONDS` (ten minutes) is the
+backstop, and `POST /rescan` forces one immediately for anyone who has just
+changed something and doesn't want to wait.
+
+## Whole-title archives
+
+`GET /archive/<platform>/<title>` streams every file of one game as a single
+uncompressed tar. A PC game is a tree of thousands of files, and installing one
+meant thousands of HTTP requests — correct, and fine on a LAN, but each pays for
+a connection, a route lookup and a catalog hit, and for small files that dwarfs
+the transfer itself.
+
+Uncompressed on purpose: game files are already compressed, and gzip would spend
+CPU to make the transfer slower. `.nsz` conversion still happens per file before
+its entry is written, so a Switch title arrives as the `.nsp` the client expects
+— which is also why the response carries no `Content-Length`: the converted
+sizes aren't known until they are produced, and guessing would be worse than
+streaming without one.
+
+Everything that can fail cleanly — an unknown title, a missing file, a
+conversion — is resolved before the first byte goes out, while `abort()` can
+still produce an error the client can read.
+
+## Per-game metadata
+
+Everything the catalog knows is otherwise inferred: the title from the folder
+name, the year from a parenthesis in it, the description from a README. An
+optional `game.json` beside a game's files is the one place to state something
+outright:
+
+```json
+{
+  "genre": "RPG",
+  "tags": ["singleplayer", "moody"],
+  "players": 1,
+  "release_year": 2019,
+  "description": "Overrides the README, if you'd rather write it here.",
+  "title": "Overrides the folder name too."
+}
+```
+
+Every key is optional and a malformed file is treated as an absent one — a
+catalog that refused to list a game because somebody left a trailing comma in
+its metadata would be a worse outcome than a game with no genre. The client
+styles cards by genre and offers a genre filter when any game has one.
+
 ## Conversion and caching
 
 `.nsz` files are decompressed on first download into `CACHE_DIR/<game_id>/`, and
@@ -205,15 +266,14 @@ question of where saves live on a given machine stays on the client side.
 
 ## Known gaps
 
-- **No auth on any of this** — fine on a trusted LAN, not fine beyond it. Note
-  that the save endpoints are *writable*, which makes this materially more
-  serious than it was when every route was read-only: anyone who can reach the
-  port can overwrite save data.
-- **`/library` rescans on every call and serves one file per request.** Both
-  are fine at this scale and both are the obvious things to change first if a
-  large PC library makes installs feel slow: a cached catalog with a manual
-  rescan trigger, and an endpoint that streams a whole title as one archive
-  instead of a request per file.
+- **No auth on anything but the saves** — fine on a trusted LAN, not fine
+  beyond it. The save endpoints can be locked with `SAVE_TOKEN`; the catalog,
+  media and downloads deliberately cannot, since they are what the tool exists
+  to expose.
+- **The catalog cache cannot see a file edited in place.** Directory mtimes
+  catch anything added, removed or renamed; a patched `.exe` several levels
+  down changes a game's size without touching them, and waits for the TTL or a
+  `POST /rescan`.
 - **The catalog is only populated by `/library`.** `_reload_catalog()` runs at
   startup and on each `/library` call; `/media` and `/download` both look games
   up in it. That holds under `python server.py`, but a deployment that imports

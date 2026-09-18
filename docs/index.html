@@ -1132,6 +1132,8 @@
       <!-- platform items injected by JS -->
     </nav>
 
+    <nav class="nav-group" id="genre-nav"></nav>
+
     <nav class="nav-group" id="status-nav">
       <div class="nav-label">Status</div>
       <!-- status items injected by JS -->
@@ -2273,6 +2275,8 @@ async function launchGame(game) {
  * --------------------------------------------------------------- */
 let state = {
   platforms: new Set(),   // empty = every platform
+  genres: new Set(),      // empty = every genre; only ever populated for a
+                          // library whose games carry a game.json
   installedOnly: false,
   query: '',
   sort: 'alpha', // persisted with the rest of the settings; the pills in the
@@ -2497,6 +2501,31 @@ function renderPlatformNav() {
     `).join('');
 }
 
+/* Genres come from the optional game.json beside each game's files,
+   so most libraries have none and this section simply isn't there. It
+   renders itself out of existence rather than showing an empty
+   heading — a filter with nothing to filter by is furniture. */
+function renderGenreNav() {
+  const counts = {};
+  GAMES.forEach(g => { if (g.genre) counts[g.genre] = (counts[g.genre] || 0) + 1; });
+
+  const nav = document.getElementById('genre-nav');
+  const genres = Object.keys(counts).sort();
+  if (genres.length === 0) {
+    nav.innerHTML = '';
+    // Anything still selected would go on filtering invisibly.
+    state.genres.clear();
+    return;
+  }
+
+  nav.innerHTML = '<div class="nav-label">Genres</div>' + genres.map(genre => `
+    <div class="nav-item${state.genres.has(genre) ? ' active' : ''}" data-type="genre" data-value="${genre}" tabindex="0" role="button">
+      <span class="nav-item-inner">${genre}</span>
+      <span class="count">${counts[genre]}</span>
+    </div>
+  `).join('');
+}
+
 /* Both nav renderers take the highlight from state rather than leaving
    it on the DOM. They rebuild their own innerHTML, and renderStatusNav
    runs on every install-status change — so a class toggled onto the
@@ -2594,9 +2623,10 @@ function renderSidebarFooter() {
 function getFilteredSortedGames() {
   let list = GAMES.filter(g => {
     const matchesPlatform = state.platforms.size === 0 || state.platforms.has(g.platform);
+    const matchesGenre = state.genres.size === 0 || state.genres.has(g.genre);
     const matchesInstalled = !state.installedOnly || g.installed;
     const matchesQuery = g.title.toLowerCase().includes(state.query.toLowerCase());
-    return matchesPlatform && matchesInstalled && matchesQuery;
+    return matchesPlatform && matchesGenre && matchesInstalled && matchesQuery;
   });
 
   if (state.sort === 'alpha') {
@@ -2996,6 +3026,9 @@ document.addEventListener('click', (e) => {
     if (type === 'platform') {
       if (state.platforms.has(value)) state.platforms.delete(value);
       else state.platforms.add(value);
+    } else if (type === 'genre') {
+      if (state.genres.has(value)) state.genres.delete(value);
+      else state.genres.add(value);
     } else if (type === 'status' && value === 'installed') {
       state.installedOnly = navItem.classList.contains('active');
       installedFilterTouched = true;
@@ -3813,6 +3846,7 @@ window.addEventListener('resize', () => {
 function renderShell() {
   renderSortPills();
   renderPlatformNav();
+  renderGenreNav();
   renderStatusNav();
   renderSidebarFooter();
   renderServerNotice();

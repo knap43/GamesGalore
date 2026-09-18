@@ -145,6 +145,33 @@ draws a native `<select>` itself and ignores this stylesheet entirely, which is
 why the original was removed and why the launch picker is a custom listbox too.
 The chosen order is persisted with the rest of the settings.
 
+### Resuming, and fetching a title in one request
+
+Two changes to how an install actually moves bytes.
+
+**Resume.** An interrupted install used to begin again at the first file, which
+on a PC game of several thousand files meant re-downloading every one because
+the last had failed. Each file is now compared against what is already on disk:
+one the size the catalog says it should be is skipped, a shorter one is
+continued with a `Range` request, and a longer one — not something this install
+wrote — is replaced. Where the expected size isn't known, which is every `.nsz`
+the server decompresses on the way out, a partial file is still continued, since
+the server's range support answers what the catalog cannot. A `416` means the
+server disagrees that anything is left to send, and the file is fetched whole
+rather than guessing which side is right.
+
+**One request per title.** Above four files, a *fresh* install fetches
+`/archive/<platform>/<title>` — the whole game as one streamed tar — instead of
+one request per file. Both conditions matter: the archive is the fast path for a
+tree of thousands of small files, and re-fetching all of them is exactly the
+wrong thing to do to an install that was interrupted halfway, so anything
+already on disk sends the install down the per-file path where resume lives. A
+server with no such endpoint answers 404, which falls back rather than failing an
+install over an optimisation.
+
+Unpacking refuses any entry that would land outside the destination. tar permits
+absolute paths and `..`, and this archive came off the network.
+
 ### Choosing what to launch
 
 `find_local_game_file` walks the install directory recursively rather than
@@ -620,13 +647,6 @@ you've confirmed that's the only dialog capability in use.
 
 ## Known gaps
 
-- **One HTTP request per file.** A large PC game is thousands of files and
-  therefore thousands of requests. Correct, and fine on a LAN, but an archive
-  endpoint that streamed a whole title in one response would be considerably
-  faster if this turns out to drag.
-- **No resume.** An install interrupted partway starts over from the first
-  file; already-complete files are downloaded again. The server supports range
-  requests, so the pieces for resuming are there, but nothing uses them yet.
 - **No content hashing.** Transfers are checked for length, not for
   correctness: a file that arrives complete but corrupted passes. A hash per
   file in the catalog would close that, at the cost of the server hashing every

@@ -247,6 +247,126 @@ def main() -> int:
     check("nothing escaped SAVE_ROOT",
           sorted(d.name for d in srv.SAVE_ROOT.iterdir()), ["PC", "Switch"])
 
+    print("\n--- catalog caching ---")
+    # /library used to rescan the whole tree on every call. It now
+    # rescans when the tree looks different, and not otherwise.
+    scans = {"count": 0}
+    real_scan = srv.scan_library
+
+    def counting_scan(path):
+        scans["count"] += 1
+        return real_scan(path)
+
+    srv.scan_library = counting_scan
+    srv._reload_catalog()          # prime it, and count that one
+    before = scans["count"]
+
+    client.get("/library")
+    client.get("/library")
+    check("repeat calls do not rescan", scans["count"], before)
+
+    # A new game appears: the directory holding it changes, which is
+    # what the signature is watching for.
+    new_game = root / "PS1" / "Late Arrival"
+    new_game.mkdir()
+    (new_game / "late.cue").write_bytes(b"FILE")
+    with srv.app.test_request_context():
+        listing = json.loads(client.get("/library").data)
+    check("a new game triggers a rescan", scans["count"], before + 1)
+    check("...and is in the catalog",
+          any(g["id"] == "PS1/Late Arrival" for g in listing), True)
+
+    client.get("/library")
+    check("and then it settles again", scans["count"], before + 1)
+
+    # An edit deep inside a tree is what the signature cannot see, so
+    # there is an explicit way to say so.
+    forced = client.post("/rescan")
+    check("a forced rescan is accepted", forced.status_code, 200)
+    check("...and reports the catalog size",
+          forced.get_json()["games"], len(srv._catalog))
+    check("...having actually rescanned", scans["count"], before + 2)
+
+    shutil.rmtree(new_game)
+    srv._reload_catalog()
+    srv.scan_library = real_scan
+
+    print("\n--- metadata sidecar ---")
+    # Everything else about a game is inferred from its folder; this is
+    # the one place to state something outright.
+    sidecar_dir = root / "PC" / "Hollow Meridian"
+    (sidecar_dir / "game.json").write_text(json.dumps({
+        "genre": "RPG",
+        "tags": ["singleplayer", "moody"],
+        "players": 1,
+        "release_year": 2019,
+        "description": "A stated description, not a parsed one.",
+    }))
+    srv._reload_catalog()
+    with srv.app.test_request_context():
+        listing = json.loads(client.get("/library").data)
+    hm = next(g for g in listing if g["id"] == "PC/Hollow Meridian")
+    check("the sidecar's genre reaches the catalog", hm["genre"], "RPG")
+    check("...its tags too", hm["tags"], ["singleplayer", "moody"])
+    check("...its player count", hm["players"], 1)
+    check("...and it overrides what the folder implied",
+          (hm["release_year"], hm["description"]),
+          (2019, "A stated description, not a parsed one."))
+    check("the sidecar is not served as part of the game",
+          any(f["filename"] == "game.json" for f in hm["files"]), False)
+
+    (sidecar_dir / "game.json").write_text("{ this is not json,,, }")
+    srv._reload_catalog()
+    with srv.app.test_request_context():
+        listing = json.loads(client.get("/library").data)
+    hm = next(g for g in listing if g["id"] == "PC/Hollow Meridian")
+    check("a malformed sidecar is ignored rather than fatal", hm["genre"], None)
+    check("...and the game is still listed with its own facts",
+          hm["title"], "Hollow Meridian")
+
+    (sidecar_dir / "game.json").unlink()
+    srv._reload_catalog()
+
+    print("\n--- whole-title archive ---")
+    # A PC game is thousands of files, and one request per file spends
+    # more on connections than on bytes.
+    import io, tarfile
+    r = client.get("/archive/PC/Hollow Meridian")
+    check("the archive is served", r.status_code, 200)
+    check("...as a tar", r.mimetype, "application/x-tar")
+
+    with tarfile.open(fileobj=io.BytesIO(r.data), mode="r:") as archive:
+        names = sorted(archive.getnames())
+        contents = {n: archive.extractfile(n).read() for n in names}
+
+    with srv.app.test_request_context():
+        listing = json.loads(client.get("/library").data)
+    catalog_names = sorted(
+        f["filename"]
+        for f in next(g for g in listing if g["id"] == "PC/Hollow Meridian")["files"]
+    )
+    check("it carries exactly the files the catalog lists", names, catalog_names)
+    for name in names:
+        source = (root / "PC" / "Hollow Meridian" / name).read_bytes()
+        check(f"...and {name} byte-for-byte", contents[name], source)
+
+    check("an unknown title is refused", client.get("/archive/PC/Nothing/").status_code, 404)
+
+    print("\n--- resumable downloads ---")
+    # An interrupted install continues each file from what is already
+    # on disk, which only works if the server honours a Range request.
+    whole = client.get("/download/PC/Hollow Meridian/bin/HollowMeridian.exe")
+    partial = client.get("/download/PC/Hollow Meridian/bin/HollowMeridian.exe",
+                         headers={"Range": "bytes=4-"})
+    check("a range request is answered as one", partial.status_code, 206)
+    check("...returning exactly the remainder", partial.data, whole.data[4:])
+    check("...and saying where it starts",
+          partial.headers.get("Content-Range"),
+          f"bytes 4-{len(whole.data) - 1}/{len(whole.data)}")
+    check("a range past the end is refused rather than answered with nothing",
+          client.get("/download/PC/Hollow Meridian/bin/HollowMeridian.exe",
+                     headers={"Range": f"bytes={len(whole.data) + 10}-"}).status_code, 416)
+
     print("\n--- save endpoint auth ---")
     # The save endpoints are the only writable surface here, and the
     # only one carrying data that isn't just a copy of what's already
