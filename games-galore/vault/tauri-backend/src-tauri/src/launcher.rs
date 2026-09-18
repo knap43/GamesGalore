@@ -19,7 +19,12 @@ use crate::settings::{get_settings, Settings};
 /// prefix args, which are user configuration.
 fn platform_args(platform: &str, path: &str) -> Vec<String> {
     match platform {
-        "PS1" | "PS2" => vec!["-fullscreen".into(), "-batch".into(), "--".into(), path.into()],
+        "PS1" | "PS2" => vec![
+            "-fullscreen".into(),
+            "-batch".into(),
+            "--".into(),
+            path.into(),
+        ],
         "PC" => vec![path.into()],
         // Eden's standard AppImage build takes a bare positional path
         // with -f for fullscreen — no --game flag, no --fullscreen long
@@ -79,7 +84,9 @@ fn collect_files_to_depth(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
         let path = entry.path();
         // symlink_metadata rather than is_dir()/is_file(), both of
         // which resolve the link and report on its target.
-        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
         if meta.file_type().is_symlink() {
             continue;
         }
@@ -102,7 +109,8 @@ fn normalized(text: &str) -> String {
 }
 
 fn has_extension(path: &Path, ext: &str) -> bool {
-    path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext))
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
 /// Every .exe in the tree, best first. Mirrors _pick_pc_executable in
@@ -151,9 +159,18 @@ fn ranked_executables(install_dir: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
             2
         };
 
-        let depth = p.strip_prefix(install_dir).map(|r| r.components().count()).unwrap_or(0);
+        let depth = p
+            .strip_prefix(install_dir)
+            .map(|r| r.components().count())
+            .unwrap_or(0);
         let size = p.metadata().map(|m| m.len()).unwrap_or(0);
-        (is_non_game, title_match, depth, std::cmp::Reverse(size), name)
+        (
+            is_non_game,
+            title_match,
+            depth,
+            std::cmp::Reverse(size),
+            name,
+        )
     });
 
     exes
@@ -168,13 +185,16 @@ fn launch_candidates(install_dir: &Path, platform: &str) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     collect_files(install_dir, &mut entries);
     entries.sort(); // fs::read_dir order is arbitrary and OS-dependent —
-                     // without this, which file gets picked when a Switch
-                     // install has more than one (base + update, say) isn't
-                     // even stable across runs, let alone predictable.
+                    // without this, which file gets picked when a Switch
+                    // install has more than one (base + update, say) isn't
+                    // even stable across runs, let alone predictable.
 
     match platform {
         "PC" => ranked_executables(install_dir, &entries),
-        "PS1" | "PS2" => entries.into_iter().filter(|p| has_extension(p, "cue")).collect(),
+        "PS1" | "PS2" => entries
+            .into_iter()
+            .filter(|p| has_extension(p, "cue"))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -285,7 +305,12 @@ pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<
 /// actual end of the session — and is only meaningful *because* each
 /// game has its own prefix, since on a shared prefix it would wait for
 /// every Wine game at once.
-fn supervise(app: AppHandle, mut child: std::process::Child, game_id: String, prefix: Option<PathBuf>) {
+fn supervise(
+    app: AppHandle,
+    mut child: std::process::Child,
+    game_id: String,
+    prefix: Option<PathBuf>,
+) {
     std::thread::spawn(move || {
         let _ = child.wait();
         if let Some(prefix) = prefix {
@@ -367,6 +392,18 @@ pub fn launch_game(
 
     supervise(app, child, game_id, prefix);
     Ok(())
+}
+
+/// Renders an argument list as a copy-pasteable, POSIX-shell-safe
+/// command line — single-quoting each argument (and escaping any
+/// literal single quotes within one) so the printed line is directly
+/// runnable even when a path contains spaces, rather than needing to
+/// be reconstructed or re-quoted by hand before testing it manually.
+fn shell_quote(args: &[String]) -> String {
+    args.iter()
+        .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -494,10 +531,17 @@ mod tests {
         let names = relative_names(&dir, launch_candidates(&dir, "PC"));
         assert_eq!(
             names,
-            vec!["bin/HollowMeridian.exe", "unins000.exe", "redist/vcredist_x64.exe"]
+            vec![
+                "bin/HollowMeridian.exe",
+                "unins000.exe",
+                "redist/vcredist_x64.exe"
+            ]
         );
         // The head of the list is exactly what the automatic pick uses.
-        assert_eq!(find_local_game_file(&dir, "PC").unwrap(), dir.join(&names[0]));
+        assert_eq!(
+            find_local_game_file(&dir, "PC").unwrap(),
+            dir.join(&names[0])
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -595,7 +639,10 @@ mod tests {
     fn only_pc_titles_have_a_prefix() {
         let settings = settings_with("/games", "");
         for platform in ["Switch", "PS1", "PS2"] {
-            assert_eq!(prefix_dir(&settings, platform, &format!("{platform}/X")), None);
+            assert_eq!(
+                prefix_dir(&settings, platform, &format!("{platform}/X")),
+                None
+            );
         }
     }
 
@@ -614,7 +661,15 @@ mod tests {
             .collect();
         assert_eq!(
             args,
-            vec!["run", "net.pcsx2.PCSX2", "--", "-fullscreen", "-batch", "--", "/games/x.cue"]
+            vec![
+                "run",
+                "net.pcsx2.PCSX2",
+                "--",
+                "-fullscreen",
+                "-batch",
+                "--",
+                "/games/x.cue"
+            ]
         );
     }
 
@@ -625,16 +680,4 @@ mod tests {
             r#"'/games/Moth & Ember/it'\''s.exe'"#
         );
     }
-}
-
-/// Renders an argument list as a copy-pasteable, POSIX-shell-safe
-/// command line — single-quoting each argument (and escaping any
-/// literal single quotes within one) so the printed line is directly
-/// runnable even when a path contains spaces, rather than needing to
-/// be reconstructed or re-quoted by hand before testing it manually.
-fn shell_quote(args: &[String]) -> String {
-    args.iter()
-        .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
-        .collect::<Vec<_>>()
-        .join(" ")
 }

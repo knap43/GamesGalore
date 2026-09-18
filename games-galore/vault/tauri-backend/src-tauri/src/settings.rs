@@ -103,6 +103,107 @@ impl Default for SaveSyncConfig {
     }
 }
 
+/// The machine's hostname where one is available, since the whole point
+/// is telling two machines apart in a version list.
+fn default_device_name() -> String {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "this machine".to_string())
+}
+
+/// Best-known defaults — native binary names and the version flags
+/// confirmed against each project's actual CLI docs where possible.
+/// PCSX2's exact flag is a reasonable guess, not confirmed the way
+/// DuckStation's and Eden's are; all four are meant to be edited once
+/// someone's actual install (especially any Flatpak) is known.
+///
+/// Switch is deliberately left as an obvious placeholder rather than a
+/// real binary name. Eden ships multiple builds with genuinely
+/// different CLI conventions (a "standard" AppImage taking a bare
+/// positional path with -f for fullscreen, vs. a separate eden-cli
+/// build using --game/--fullscreen) — platform_args() in launcher.rs
+/// is written for the AppImage shape, so defaulting this to a plain
+/// command name would silently send the wrong flags to anyone on a
+/// different build. An AppImage path is inherently personal and
+/// versioned besides, so there's no real default worth hardcoding here.
+fn default_emulators() -> HashMap<String, EmulatorConfig> {
+    let mut m = HashMap::new();
+    m.insert(
+        "PS1".to_string(),
+        EmulatorConfig {
+            command: "duckstation-qt".to_string(),
+            args_prefix: vec![],
+            version_flag: "-version".to_string(),
+        },
+    );
+    m.insert(
+        "PS2".to_string(),
+        EmulatorConfig {
+            command: "pcsx2-qt".to_string(),
+            args_prefix: vec![],
+            version_flag: "--version".to_string(),
+        },
+    );
+    m.insert(
+        "PC".to_string(),
+        EmulatorConfig {
+            command: "wine".to_string(),
+            args_prefix: vec![],
+            version_flag: "--version".to_string(),
+        },
+    );
+    m.insert(
+        "Switch".to_string(),
+        EmulatorConfig {
+            command: "/path/to/Eden.AppImage".to_string(),
+            args_prefix: vec![],
+            version_flag: "--version".to_string(),
+        },
+    );
+    m
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            server_base: String::new(),
+            install_root: String::new(),
+            sound_enabled: true,
+            emulators: default_emulators(),
+            launch_overrides: HashMap::new(),
+            prefix_root: String::new(),
+            save_sync: SaveSyncConfig::default(),
+        }
+    }
+}
+
+fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("settings.json"))
+}
+
+#[tauri::command]
+pub fn get_settings(app: AppHandle) -> Settings {
+    let path = match settings_file(&app) {
+        Ok(p) => p,
+        Err(_) => return Settings::default(),
+    };
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+    let path = settings_file(&app)?;
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    fs::write(path, json).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,89 +250,4 @@ mod tests {
         let settings: Settings = serde_json::from_str(stored).unwrap();
         assert!(!settings.save_sync.enabled);
     }
-}
-
-/// The machine's hostname where one is available, since the whole point
-/// is telling two machines apart in a version list.
-fn default_device_name() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "this machine".to_string())
-}
-
-/// Best-known defaults — native binary names and the version flags
-/// confirmed against each project's actual CLI docs where possible.
-/// PCSX2's exact flag is a reasonable guess, not confirmed the way
-/// DuckStation's and Eden's are; all four are meant to be edited once
-/// someone's actual install (especially any Flatpak) is known.
-///
-/// Switch is deliberately left as an obvious placeholder rather than a
-/// real binary name. Eden ships multiple builds with genuinely
-/// different CLI conventions (a "standard" AppImage taking a bare
-/// positional path with -f for fullscreen, vs. a separate eden-cli
-/// build using --game/--fullscreen) — platform_args() in launcher.rs
-/// is written for the AppImage shape, so defaulting this to a plain
-/// command name would silently send the wrong flags to anyone on a
-/// different build. An AppImage path is inherently personal and
-/// versioned besides, so there's no real default worth hardcoding here.
-fn default_emulators() -> HashMap<String, EmulatorConfig> {
-    let mut m = HashMap::new();
-    m.insert(
-        "PS1".to_string(),
-        EmulatorConfig { command: "duckstation-qt".to_string(), args_prefix: vec![], version_flag: "-version".to_string() },
-    );
-    m.insert(
-        "PS2".to_string(),
-        EmulatorConfig { command: "pcsx2-qt".to_string(), args_prefix: vec![], version_flag: "--version".to_string() },
-    );
-    m.insert(
-        "PC".to_string(),
-        EmulatorConfig { command: "wine".to_string(), args_prefix: vec![], version_flag: "--version".to_string() },
-    );
-    m.insert(
-        "Switch".to_string(),
-        EmulatorConfig { command: "/path/to/Eden.AppImage".to_string(), args_prefix: vec![], version_flag: "--version".to_string() },
-    );
-    m
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            server_base: String::new(),
-            install_root: String::new(),
-            sound_enabled: true,
-            emulators: default_emulators(),
-            launch_overrides: HashMap::new(),
-            prefix_root: String::new(),
-            save_sync: SaveSyncConfig::default(),
-        }
-    }
-}
-
-fn settings_file(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("settings.json"))
-}
-
-#[tauri::command]
-pub fn get_settings(app: AppHandle) -> Settings {
-    let path = match settings_file(&app) {
-        Ok(p) => p,
-        Err(_) => return Settings::default(),
-    };
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
-}
-
-#[tauri::command]
-pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
-    let path = settings_file(&app)?;
-    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    fs::write(path, json).map_err(|e| e.to_string())
 }

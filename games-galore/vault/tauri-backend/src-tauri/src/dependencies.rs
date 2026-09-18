@@ -22,7 +22,11 @@ pub struct DependencyStatus {
 }
 
 #[tauri::command]
-pub fn check_dependency(command: String, args_prefix: Vec<String>, version_flag: String) -> DependencyStatus {
+pub fn check_dependency(
+    command: String,
+    args_prefix: Vec<String>,
+    version_flag: String,
+) -> DependencyStatus {
     if command == "flatpak" {
         return check_flatpak_app(&args_prefix);
     }
@@ -59,7 +63,11 @@ fn check_flatpak_app(args_prefix: &[String]) -> DependencyStatus {
         .and_then(|i| args_prefix.get(i + 1));
 
     let Some(app_id) = app_id else {
-        return DependencyStatus { name: "flatpak".to_string(), found: false, version: None };
+        return DependencyStatus {
+            name: "flatpak".to_string(),
+            found: false,
+            version: None,
+        };
     };
 
     match Command::new("flatpak").arg("info").arg(app_id).output() {
@@ -68,8 +76,16 @@ fn check_flatpak_app(args_prefix: &[String]) -> DependencyStatus {
                 .lines()
                 .find_map(|l| l.strip_prefix("Version:"))
                 .map(|v| v.trim().to_string());
-            DependencyStatus { name: app_id.clone(), found: true, version }
+            DependencyStatus {
+                name: app_id.clone(),
+                found: true,
+                version,
+            }
         }
-        _ => DependencyStatus { name: app_id.clone(), found: false, version: None },
+        _ => DependencyStatus {
+            name: app_id.clone(),
+            found: false,
+            version: None,
+        },
     }
 }

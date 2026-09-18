@@ -29,8 +29,8 @@ pub struct Game {
     pub files: Vec<GameFile>,
     pub screenshots: Vec<String>, // absolute URLs, already resolved by the server
     pub cover: Option<String>,    // absolute URL — whichever screenshot has "cover" in its
-                                   // filename, or the first screenshot if none does
-    pub trailer: Option<String>,  // absolute URL
+    // filename, or the first screenshot if none does
+    pub trailer: Option<String>, // absolute URL
 }
 
 #[tauri::command]
@@ -38,9 +38,16 @@ pub async fn fetch_library(app: AppHandle, server_base: String) -> Result<Vec<Ga
     let url = format!("{}/library", server_base.trim_end_matches('/'));
     let response = reqwest::get(&url).await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("server returned {} fetching {}", response.status(), url));
+        return Err(format!(
+            "server returned {} fetching {}",
+            response.status(),
+            url
+        ));
     }
-    let games = response.json::<Vec<Game>>().await.map_err(|e| e.to_string())?;
+    let games = response
+        .json::<Vec<Game>>()
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Keeps the installed titles' cached entries current — names,
     // covers and blurbs change on the server side, and this is the

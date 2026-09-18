@@ -105,7 +105,10 @@ fn set_status(app: &AppHandle, id: &str, status: InstallStatus) -> Result<(), St
 /// Best-effort by design — a dropped progress frame is not a reason to
 /// fail an install that is otherwise proceeding.
 fn emit_progress(app: &AppHandle, id: &str, file: &str, pct: u8) {
-    let status = InstallStatus::Downloading { file: file.to_string(), pct };
+    let status = InstallStatus::Downloading {
+        file: file.to_string(),
+        pct,
+    };
     let _ = app.emit("install:status", (id, &status));
 }
 
@@ -145,12 +148,22 @@ pub async fn install_game(
 ) -> Result<(), String> {
     if game.files.is_empty() {
         let message = "no files found for this game".to_string();
-        set_status(&app, &game.id, InstallStatus::Failed { message: message.clone() })?;
+        set_status(
+            &app,
+            &game.id,
+            InstallStatus::Failed {
+                message: message.clone(),
+            },
+        )?;
         return Err(message);
     }
 
-    let dest_dir = Path::new(&install_root).join(&game.platform).join(&game.title);
-    fs::create_dir_all(&dest_dir).await.map_err(|e| e.to_string())?;
+    let dest_dir = Path::new(&install_root)
+        .join(&game.platform)
+        .join(&game.title);
+    fs::create_dir_all(&dest_dir)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Progress is reported against the whole title, not the file being
     // transferred at the moment. A PC game is a tree of many files of
@@ -158,7 +171,11 @@ pub async fn install_game(
     // 100% and reset over and over while telling you nothing about how
     // far along the install actually is.
     let total_bytes: u64 = game.files.iter().map(|f| f.size_bytes).sum();
-    let mut progress = Progress { done_bytes: 0, total_bytes, last_pct: -1 };
+    let mut progress = Progress {
+        done_bytes: 0,
+        total_bytes,
+        last_pct: -1,
+    };
 
     // Persisted once, so an install interrupted by the app closing is
     // still recognisable as one on next launch. Everything after this
@@ -166,7 +183,10 @@ pub async fn install_game(
     set_status(
         &app,
         &game.id,
-        InstallStatus::Downloading { file: game.files[0].filename.clone(), pct: 0 },
+        InstallStatus::Downloading {
+            file: game.files[0].filename.clone(),
+            pct: 0,
+        },
     )?;
 
     for file in &game.files {
@@ -188,7 +208,13 @@ pub async fn install_game(
         }
     }
 
-    set_status(&app, &game.id, InstallStatus::Installed { local_dir: dest_dir })?;
+    set_status(
+        &app,
+        &game.id,
+        InstallStatus::Installed {
+            local_dir: dest_dir,
+        },
+    )?;
     // Now that this title is on disk, its catalog entry belongs in the
     // startup cache — it should be on the shelf at next launch whether
     // or not the library server answers.
@@ -263,9 +289,13 @@ async fn download_file(
     // yet — File::create doesn't make them, it just fails.
     let dest_path = dest_dir.join(&dest_filename);
     if let Some(parent) = dest_path.parent() {
-        fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    let mut out = fs::File::create(&dest_path).await.map_err(|e| e.to_string())?;
+    let mut out = fs::File::create(&dest_path)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Emitted once per file regardless of whether the overall
     // percentage moved, so the name on screen keeps up while a long
@@ -321,12 +351,11 @@ pub fn uninstall_game(app: AppHandle, game_id: String) -> Result<(), String> {
 /// running; the unconditional cleanup that follows handles the case
 /// where it isn't.
 #[tauri::command]
-pub fn cancel_install(
-    app: AppHandle,
-    game_id: String,
-    install_root: String,
-) -> Result<(), String> {
-    cancelled_downloads().lock().unwrap().insert(game_id.clone());
+pub fn cancel_install(app: AppHandle, game_id: String, install_root: String) -> Result<(), String> {
+    cancelled_downloads()
+        .lock()
+        .unwrap()
+        .insert(game_id.clone());
 
     if let Some(dir) = install_dir_for(&install_root, &game_id) {
         if dir.exists() {
@@ -336,67 +365,6 @@ pub fn cancel_install(
 
     crate::catalog_cache::forget(&app, &game_id);
     set_status(&app, &game_id, InstallStatus::NotInstalled)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn progress(done: u64, total: u64) -> Progress {
-        Progress { done_bytes: done, total_bytes: total, last_pct: -1 }
-    }
-
-    #[test]
-    fn percentage_runs_across_the_whole_title() {
-        // Three files of 100 bytes each: finishing the first is a third
-        // of the install, not 100% of it.
-        assert_eq!(progress(100, 300).pct(), 33);
-        assert_eq!(progress(300, 300).pct(), 100);
-    }
-
-    #[test]
-    fn percentage_clamps_when_nsz_decompresses_past_its_listed_size() {
-        assert_eq!(progress(250, 100).pct(), 100);
-    }
-
-    #[test]
-    fn percentage_of_an_empty_total_is_zero_not_a_panic() {
-        assert_eq!(progress(0, 0).pct(), 0);
-    }
-
-    #[test]
-    fn percentage_does_not_overflow_on_a_large_title() {
-        // done * 100 overflows a u32 well before this; u64 is required.
-        let p = progress(80 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
-        assert_eq!(p.pct(), 80);
-    }
-
-    #[test]
-    fn path_segments_are_encoded_without_losing_separators() {
-        assert_eq!(encode_path_segments("Switch/198X"), "Switch/198X");
-        assert_eq!(encode_path_segments("PC/Moth & Ember"), "PC/Moth%20%26%20Ember");
-        // A nested filename has to survive the same way, or the
-        // server's route can't split it back apart.
-        assert_eq!(encode_path_segments("bin/game data/run.exe"), "bin/game%20data/run.exe");
-    }
-
-    #[test]
-    fn error_detail_is_pulled_out_of_flasks_html_error_page() {
-        let body = "<html><title>500</title><body><h1>Error</h1>\
-                    <p>nsz conversion failed: bad header</p></body></html>";
-        assert_eq!(extract_error_detail(body), "nsz conversion failed: bad header");
-        assert_eq!(extract_error_detail("   "), "no error detail returned");
-    }
-
-    #[test]
-    fn install_dir_is_reconstructed_from_the_game_id() {
-        assert_eq!(
-            install_dir_for("/games", "PC/Moth & Ember"),
-            Some(PathBuf::from("/games/PC/Moth & Ember"))
-        );
-        // No platform separator means no directory can be derived.
-        assert_eq!(install_dir_for("/games", "bare-id"), None);
-    }
 }
 
 /// game_id ("Switch/198X") has a real path separator in it that must
@@ -433,5 +401,79 @@ fn extract_error_detail(html_body: &str) -> String {
         "no error detail returned".to_string()
     } else {
         trimmed.chars().take(300).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn progress(done: u64, total: u64) -> Progress {
+        Progress {
+            done_bytes: done,
+            total_bytes: total,
+            last_pct: -1,
+        }
+    }
+
+    #[test]
+    fn percentage_runs_across_the_whole_title() {
+        // Three files of 100 bytes each: finishing the first is a third
+        // of the install, not 100% of it.
+        assert_eq!(progress(100, 300).pct(), 33);
+        assert_eq!(progress(300, 300).pct(), 100);
+    }
+
+    #[test]
+    fn percentage_clamps_when_nsz_decompresses_past_its_listed_size() {
+        assert_eq!(progress(250, 100).pct(), 100);
+    }
+
+    #[test]
+    fn percentage_of_an_empty_total_is_zero_not_a_panic() {
+        assert_eq!(progress(0, 0).pct(), 0);
+    }
+
+    #[test]
+    fn percentage_does_not_overflow_on_a_large_title() {
+        // done * 100 overflows a u32 well before this; u64 is required.
+        let p = progress(80 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024);
+        assert_eq!(p.pct(), 80);
+    }
+
+    #[test]
+    fn path_segments_are_encoded_without_losing_separators() {
+        assert_eq!(encode_path_segments("Switch/198X"), "Switch/198X");
+        assert_eq!(
+            encode_path_segments("PC/Moth & Ember"),
+            "PC/Moth%20%26%20Ember"
+        );
+        // A nested filename has to survive the same way, or the
+        // server's route can't split it back apart.
+        assert_eq!(
+            encode_path_segments("bin/game data/run.exe"),
+            "bin/game%20data/run.exe"
+        );
+    }
+
+    #[test]
+    fn error_detail_is_pulled_out_of_flasks_html_error_page() {
+        let body = "<html><title>500</title><body><h1>Error</h1>\
+                    <p>nsz conversion failed: bad header</p></body></html>";
+        assert_eq!(
+            extract_error_detail(body),
+            "nsz conversion failed: bad header"
+        );
+        assert_eq!(extract_error_detail("   "), "no error detail returned");
+    }
+
+    #[test]
+    fn install_dir_is_reconstructed_from_the_game_id() {
+        assert_eq!(
+            install_dir_for("/games", "PC/Moth & Ember"),
+            Some(PathBuf::from("/games/PC/Moth & Ember"))
+        );
+        // No platform separator means no directory can be derived.
+        assert_eq!(install_dir_for("/games", "bare-id"), None);
     }
 }

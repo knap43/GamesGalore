@@ -60,8 +60,11 @@ fn write_cache(path: &Path, games: &[Game]) -> Result<(), String> {
 /// Sorted by id so the file doesn't churn between writes purely
 /// because a HashMap iterated in a different order.
 fn merge(cached: Vec<Game>, live: &[Game], installed: &HashSet<String>) -> Vec<Game> {
-    let mut out: Vec<Game> =
-        live.iter().filter(|g| installed.contains(&g.id)).cloned().collect();
+    let mut out: Vec<Game> = live
+        .iter()
+        .filter(|g| installed.contains(&g.id))
+        .cloned()
+        .collect();
     let covered: HashSet<String> = out.iter().map(|g| g.id.clone()).collect();
     out.extend(
         cached

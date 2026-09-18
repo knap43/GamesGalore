@@ -115,13 +115,14 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
                 // own installed files and remember it. This is why
                 // there is no per-game configuration to fill in: the
                 // first time a title needs its id, it gets one.
-                let detected = crate::install_state::install_dir_for(&settings.install_root, game_id)
-                    .and_then(|dir| detect_switch_title_id(dir.to_string_lossy().to_string()))
-                    .ok_or_else(|| {
-                        "couldn't work out this game's Title ID from its files — \
+                let detected =
+                    crate::install_state::install_dir_for(&settings.install_root, game_id)
+                        .and_then(|dir| detect_switch_title_id(dir.to_string_lossy().to_string()))
+                        .ok_or_else(|| {
+                            "couldn't work out this game's Title ID from its files — \
                          play it once and it will be identified automatically"
-                            .to_string()
-                    })?;
+                                .to_string()
+                        })?;
                 remember_title_id(app, game_id, &detected);
                 detected
             } else {
@@ -133,7 +134,11 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
             if subpaths.is_empty() {
                 return Err(format!("no save directory found for Title ID {title_id}"));
             }
-            Ok(SaveSource { root, subpaths, title_id: Some(title_id) })
+            Ok(SaveSource {
+                root,
+                subpaths,
+                title_id: Some(title_id),
+            })
         }
         "PC" => {
             let prefix = crate::launcher::prefix_dir(&settings, platform, game_id)
@@ -143,9 +148,15 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
             // rebuilds for itself and that would dwarf the save.
             let users = PathBuf::from("drive_c").join("users");
             if !prefix.join(&users).is_dir() {
-                return Err("this game's Wine prefix has no user directory yet — run it once".into());
+                return Err(
+                    "this game's Wine prefix has no user directory yet — run it once".into(),
+                );
             }
-            Ok(SaveSource { root: prefix, subpaths: vec![users], title_id: None })
+            Ok(SaveSource {
+                root: prefix,
+                subpaths: vec![users],
+                title_id: None,
+            })
         }
         _ => Err(format!("cloud saves aren't supported for {platform}")),
     }
@@ -201,7 +212,10 @@ fn collect_named_dirs(dir: &Path, name: &str, depth: usize, out: &mut Vec<PathBu
         if !path.is_dir() {
             continue;
         }
-        if path.file_name().is_some_and(|n| n.eq_ignore_ascii_case(name)) {
+        if path
+            .file_name()
+            .is_some_and(|n| n.eq_ignore_ascii_case(name))
+        {
             out.push(path);
         } else {
             collect_named_dirs(&path, name, depth - 1, out);
@@ -241,9 +255,15 @@ pub fn detect_switch_title_id(install_dir: String) -> Option<String> {
         if !path.is_file() {
             continue;
         }
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         found.extend(title_ids_in_text(&name));
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("nsp")) {
+        if path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("nsp"))
+        {
             found.extend(title_ids_from_nsp(&path));
         }
     }
@@ -252,7 +272,11 @@ pub fn detect_switch_title_id(install_dir: String) -> Option<String> {
     // Normalised, base and update collapse onto the same value while
     // DLC sits above it, so the lowest is the base — which is the one
     // the emulator files saves under.
-    found.iter().map(|id| base_title_id(*id)).min().map(|id| format!("{id:016X}"))
+    found
+        .iter()
+        .map(|id| base_title_id(*id))
+        .min()
+        .map(|id| format!("{id:016X}"))
 }
 
 /// Updates share their base game's save data and differ only in the
@@ -366,7 +390,10 @@ fn pfs0_entry_names(path: &Path) -> Result<Vec<String>, String> {
 /// manual list.
 #[tauri::command]
 pub fn list_switch_title_ids(switch_data_dir: String) -> Vec<String> {
-    let base = Path::new(&switch_data_dir).join("nand").join("user").join("save");
+    let base = Path::new(&switch_data_dir)
+        .join("nand")
+        .join("user")
+        .join("save");
     let mut candidates = Vec::new();
     collect_hex16_dirs(&base, 4, &mut candidates);
 
@@ -380,7 +407,11 @@ pub fn list_switch_title_ids(switch_data_dir: String) -> Vec<String> {
     // emulator adds or removes a level.
     let deepest: Vec<PathBuf> = candidates
         .iter()
-        .filter(|c| !candidates.iter().any(|other| other != *c && other.starts_with(c)))
+        .filter(|c| {
+            !candidates
+                .iter()
+                .any(|other| other != *c && other.starts_with(c))
+        })
         .cloned()
         .collect();
 
@@ -477,7 +508,9 @@ fn walk_save_files(root: &Path, mut visit: impl FnMut(&Path, &fs::Metadata)) {
         // symlink_metadata, not metadata: the latter resolves the link
         // and reports on its target, which is exactly what must not
         // happen here.
-        let Ok(meta) = fs::symlink_metadata(&path) else { continue };
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
         if meta.file_type().is_symlink() {
             continue;
         }
@@ -530,7 +563,11 @@ async fn fetch_versions(server_base: &str, game_id: &str) -> Result<Vec<SaveVers
     if !response.status().is_success() {
         return Err(format!("server returned {}", response.status()));
     }
-    Ok(response.json::<Listing>().await.map_err(|e| e.to_string())?.versions)
+    Ok(response
+        .json::<Listing>()
+        .await
+        .map_err(|e| e.to_string())?
+        .versions)
 }
 
 /// What the UI needs to decide whether to offer an upload, a download,
@@ -599,7 +636,14 @@ pub async fn save_status(
         }
     };
 
-    SaveStatus { state, local_modified, local_bytes, latest, unavailable: None, title_id }
+    SaveStatus {
+        state,
+        local_modified,
+        local_bytes,
+        latest,
+        unavailable: None,
+        title_id,
+    }
 }
 
 #[tauri::command]
@@ -644,9 +688,15 @@ pub async fn upload_save(
         .await
         .map_err(|e| e.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("server returned {} storing the save", response.status()));
+        return Err(format!(
+            "server returned {} storing the save",
+            response.status()
+        ));
     }
-    response.json::<SaveVersion>().await.map_err(|e| e.to_string())
+    response
+        .json::<SaveVersion>()
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Replaces local save data with a stored version. The existing local
@@ -665,12 +715,14 @@ pub async fn download_save(
 
     let version = match version {
         Some(v) if !v.is_empty() => v,
-        _ => fetch_versions(&server_base, &game_id)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| "the server has no save for this game".to_string())?
-            .version,
+        _ => {
+            fetch_versions(&server_base, &game_id)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| "the server has no save for this game".to_string())?
+                .version
+        }
     };
 
     let url = format!(
@@ -680,7 +732,10 @@ pub async fn download_save(
     );
     let response = reqwest::get(url).await.map_err(|e| e.to_string())?;
     if !response.status().is_success() {
-        return Err(format!("server returned {} fetching the save", response.status()));
+        return Err(format!(
+            "server returned {} fetching the save",
+            response.status()
+        ));
     }
     let bytes = response.bytes().await.map_err(|e| e.to_string())?;
 
@@ -709,7 +764,9 @@ fn build_archive(source: &SaveSource) -> Result<Vec<u8>, String> {
             if failure.is_some() {
                 return;
             }
-            let Ok(relative) = path.strip_prefix(&source.root) else { return };
+            let Ok(relative) = path.strip_prefix(&source.root) else {
+                return;
+            };
             if let Err(e) = builder.append_path_with_name(path, relative) {
                 failure = Some(format!("archiving {}: {e}", path.display()));
             }
@@ -745,7 +802,10 @@ fn extract_archive(bytes: &[u8], dest: &Path) -> Result<(), String> {
         let mut entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path().map_err(|e| e.to_string())?.into_owned();
         if is_unsafe_entry(&path) {
-            return Err(format!("archive contains an unsafe path: {}", path.display()));
+            return Err(format!(
+                "archive contains an unsafe path: {}",
+                path.display()
+            ));
         }
         // Per-entry unpack, unlike Archive::unpack, does not create the
         // directories leading up to an entry — so a nested file in an
@@ -778,8 +838,7 @@ fn back_up_existing(source: &SaveSource) -> Result<(), String> {
         }
         let mut backup = full.clone();
         backup.as_mut_os_string().push(format!(".bak-{stamp}"));
-        fs::rename(&full, &backup)
-            .map_err(|e| format!("backing up {}: {e}", full.display()))?;
+        fs::rename(&full, &backup).map_err(|e| format!("backing up {}: {e}", full.display()))?;
     }
     Ok(())
 }
@@ -867,7 +926,11 @@ mod tests {
     fn an_archive_round_trips_into_a_different_root() {
         let data = switch_fixture("0100AAA000BBB000");
         let subpaths = find_switch_save_dirs(&data, "0100AAA000BBB000");
-        let source = SaveSource { root: data.clone(), subpaths: subpaths.clone(), title_id: None };
+        let source = SaveSource {
+            root: data.clone(),
+            subpaths: subpaths.clone(),
+            title_id: None,
+        };
 
         let archive = build_archive(&source).unwrap();
 
@@ -876,14 +939,19 @@ mod tests {
         extract_archive(&archive, &other).unwrap();
 
         let restored = other.join(&subpaths[0]);
-        assert_eq!(fs::read_to_string(restored.join("progress.dat")).unwrap(), "level 4");
+        assert_eq!(
+            fs::read_to_string(restored.join("progress.dat")).unwrap(),
+            "level 4"
+        );
         assert_eq!(
             fs::read_to_string(restored.join("options/controls.cfg")).unwrap(),
             "invert=y"
         );
         // The other title was never part of this game's save.
         assert!(!other
-            .join("nand/user/save/0000000000000000/7b1c2f9e4a5d6c8b3e0f1a2b3c4d5e6f/0100000000000FFF")
+            .join(
+                "nand/user/save/0000000000000000/7b1c2f9e4a5d6c8b3e0f1a2b3c4d5e6f/0100000000000FFF"
+            )
             .exists());
 
         fs::remove_dir_all(&data).unwrap();
@@ -927,11 +995,18 @@ mod tests {
     fn restoring_moves_the_existing_save_aside_rather_than_deleting_it() {
         let data = switch_fixture("0100AAA000BBB000");
         let subpaths = find_switch_save_dirs(&data, "0100AAA000BBB000");
-        let source = SaveSource { root: data.clone(), subpaths: subpaths.clone(), title_id: None };
+        let source = SaveSource {
+            root: data.clone(),
+            subpaths: subpaths.clone(),
+            title_id: None,
+        };
 
         back_up_existing(&source).unwrap();
 
-        assert!(!data.join(&subpaths[0]).exists(), "original should have moved");
+        assert!(
+            !data.join(&subpaths[0]).exists(),
+            "original should have moved"
+        );
         let parent = data.join(subpaths[0].parent().unwrap());
         let backups: Vec<_> = fs::read_dir(&parent)
             .unwrap()
@@ -978,9 +1053,9 @@ mod tests {
         out.extend_from_slice(&0u32.to_le_bytes());
         for (i, offset) in offsets.iter().enumerate() {
             out.extend_from_slice(&(i as u64).to_le_bytes()); // data offset
-            out.extend_from_slice(&1u64.to_le_bytes());       // size
-            out.extend_from_slice(&offset.to_le_bytes());     // name position
-            out.extend_from_slice(&0u32.to_le_bytes());       // reserved
+            out.extend_from_slice(&1u64.to_le_bytes()); // size
+            out.extend_from_slice(&offset.to_le_bytes()); // name position
+            out.extend_from_slice(&0u32.to_le_bytes()); // reserved
         }
         out.extend_from_slice(&strings);
         out.extend_from_slice(&vec![0u8; names.len()]); // the content itself
@@ -990,7 +1065,11 @@ mod tests {
     #[test]
     fn a_title_id_is_read_from_the_filename() {
         let dir = scratch("named");
-        fs::write(dir.join("Bad North [0100C1F0051B4000][v0].nsp"), b"not a real nsp").unwrap();
+        fs::write(
+            dir.join("Bad North [0100C1F0051B4000][v0].nsp"),
+            b"not a real nsp",
+        )
+        .unwrap();
         assert_eq!(
             detect_switch_title_id(dir.to_string_lossy().to_string()),
             Some("0100C1F0051B4000".to_string())
@@ -1021,7 +1100,11 @@ mod tests {
     #[test]
     fn an_update_resolves_to_the_base_game_saves_are_filed_under() {
         let dir = scratch("update");
-        fs::write(dir.join("Dorfromantik [0100C1F0051B4800][v65536].nsp"), b"x").unwrap();
+        fs::write(
+            dir.join("Dorfromantik [0100C1F0051B4800][v65536].nsp"),
+            b"x",
+        )
+        .unwrap();
         assert_eq!(
             detect_switch_title_id(dir.to_string_lossy().to_string()),
             Some("0100C1F0051B4000".to_string())
@@ -1054,7 +1137,10 @@ mod tests {
     fn a_folder_with_nothing_identifying_yields_nothing() {
         let dir = scratch("anonymous");
         fs::write(dir.join("Moonscars.nsp"), b"definitely not a pfs0").unwrap();
-        assert_eq!(detect_switch_title_id(dir.to_string_lossy().to_string()), None);
+        assert_eq!(
+            detect_switch_title_id(dir.to_string_lossy().to_string()),
+            None
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1067,7 +1153,10 @@ mod tests {
         bad.extend_from_slice(&0u32.to_le_bytes());
         fs::write(dir.join("evil.nsp"), bad).unwrap();
         // No panic, no vast allocation, just no answer.
-        assert_eq!(detect_switch_title_id(dir.to_string_lossy().to_string()), None);
+        assert_eq!(
+            detect_switch_title_id(dir.to_string_lossy().to_string()),
+            None
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1081,11 +1170,17 @@ mod tests {
         let users = prefix.join("drive_c/users/you");
 
         // Real save data, inside the prefix.
-        write(&users.join("AppData/Roaming/ULTRAKILL/save.dat"), "progress");
+        write(
+            &users.join("AppData/Roaming/ULTRAKILL/save.dat"),
+            "progress",
+        );
 
         // A big tree outside it, standing in for a home directory.
         for i in 0..40 {
-            write(&home.join(format!("Documents/thesis/chapter{i}.txt")), "lots of words");
+            write(
+                &home.join(format!("Documents/thesis/chapter{i}.txt")),
+                "lots of words",
+            );
         }
         // ...which the prefix links out to, exactly as Wine does.
         std::os::unix::fs::symlink(home.join("Documents"), users.join("Documents")).unwrap();
@@ -1138,10 +1233,14 @@ mod tests {
         let restored = scratch("restored");
         extract_archive(&archive, &restored).unwrap();
 
-        assert!(restored.join("drive_c/users/you/AppData/Roaming/ULTRAKILL/save.dat").is_file());
+        assert!(restored
+            .join("drive_c/users/you/AppData/Roaming/ULTRAKILL/save.dat")
+            .is_file());
         // The user's documents are not this game's save data and must
         // never have been swept into it.
-        assert!(!restored.join("drive_c/users/you/Documents/thesis/chapter0.txt").exists());
+        assert!(!restored
+            .join("drive_c/users/you/Documents/thesis/chapter0.txt")
+            .exists());
 
         fs::remove_dir_all(&base).unwrap();
         fs::remove_dir_all(&restored).unwrap();
