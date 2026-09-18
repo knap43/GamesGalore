@@ -1,10 +1,10 @@
 // Playtime, which the UI has offered to sort by since the first
-// version and which did nothing at all for a real library: the sorts,
+// version and which did nothing at all for a real library: the sort,
 // what the cards and the detail header show, and the live update when
-// a session ends.
+// a session ends. When a game was last played is deliberately not
+// recorded, and this suite holds that line too.
 const { boot: bootApp, check, sleep, finish, createRuntime, openGame } = require('./harness');
 
-const DAY = 86400;
 const now = () => Math.floor(Date.now() / 1000);
 
 const game = (id, title, platform) => ({
@@ -59,8 +59,8 @@ const setSort = async (doc, win, value) => {
 
 (async () => {
   const played = {
-    'PC/Hollow Meridian': { seconds: 76 * 3600, last_played: now() - 20 * DAY, sessions: 40 },
-    'PC/Tidebreaker': { seconds: 2 * 3600, last_played: now() - 1 * DAY, sessions: 3 },
+    'PC/Hollow Meridian': { seconds: 76 * 3600, sessions: 40 },
+    'PC/Tidebreaker': { seconds: 2 * 3600, sessions: 3 },
     // Never played: no entry at all, which is what the backend returns.
   };
   const { doc, win, errors, emit } = await boot(played);
@@ -76,22 +76,20 @@ const setSort = async (doc, win, value) => {
   check('...and an unplayed game last',
         titlesInOrder(doc)[2], 'Bramblewood');
 
-  await setSort(doc, win, 'recent');
-  check('sorting by recent puts the most recently played first',
-        titlesInOrder(doc)[0], 'Tidebreaker');
-  check('...and a game nobody has played last, not first',
-        titlesInOrder(doc)[2], 'Bramblewood');
-
-  // The detail header shows both numbers.
+  // The detail header shows the hours, after the facts about the game
+  // itself rather than in place of any of them.
   await openGame(doc, 'Hollow Meridian');
   const meta = doc.getElementById('detail-meta').textContent;
   check('the detail view shows the hours', meta.includes('76h played'), true);
-  check('...and when it was last played', meta.includes('Last played'), true);
+  check('...without displacing the release year', meta.includes('2020'), true);
+  check('...and puts it last, after the year',
+        meta.indexOf('2020') < meta.indexOf('76h played'), true);
+  check('nothing claims to know when it was last played',
+        meta.includes('Last played'), false);
 
   // A finished session arrives as an event, so quitting a game updates
   // the sort without a restart.
-  emit('playtime:changed', ['PC/Hollow Meridian',
-                            { seconds: 80 * 3600, last_played: now(), sessions: 41 }]);
+  emit('playtime:changed', ['PC/Hollow Meridian', { seconds: 80 * 3600, sessions: 41 }]);
   await sleep(150);
   check('a finished session updates the open detail view',
         doc.getElementById('detail-meta').textContent.includes('80h played'), true);
@@ -100,7 +98,7 @@ const setSort = async (doc, win, value) => {
   await sleep(150);
   check('...and the card behind it',
         sub(doc, 'Hollow Meridian').includes('80h played'), true);
-  await setSort(doc, win, 'recent');
+  await setSort(doc, win, 'playtime');
   check('...and where it sorts', titlesInOrder(doc)[0], 'Hollow Meridian');
 
   check('no uncaught errors', errors, []);
@@ -108,12 +106,13 @@ const setSort = async (doc, win, value) => {
   // A short session is not playtime, and the backend says so by
   // sending an entry whose seconds never moved.
   {
-    const t = await boot({ 'PC/Tidebreaker': { seconds: 0, last_played: now(), sessions: 1 } });
+    const t = await boot({ 'PC/Tidebreaker': { seconds: 0, sessions: 1 } });
     check('a game opened and closed immediately shows no hours',
           sub(t.doc, 'Tidebreaker').includes('played'), false);
-    await setSort(t.doc, t.win, 'recent');
-    check('...but is still the most recently played',
-          titlesInOrder(t.doc)[0], 'Tidebreaker');
+    check('...and sorts as unplayed', (await (async () => {
+      await setSort(t.doc, t.win, 'playtime');
+      return titlesInOrder(t.doc);
+    })()).length, 3);
     check('no uncaught errors on the short-session path', t.errors, []);
   }
 
@@ -124,7 +123,8 @@ const setSort = async (doc, win, value) => {
   {
     const t = await boot(played);
     const pills = [...t.doc.querySelectorAll('.sort-pill')].map(p => p.dataset.sort);
-    check('every order is offered', pills, ['recent', 'playtime', 'alpha', 'platform']);
+    check('every order that means something is offered — and no others',
+          pills, ['playtime', 'alpha', 'platform']);
     check('the current one is marked',
           t.doc.querySelector('.sort-pill.active').dataset.sort, 'alpha');
 

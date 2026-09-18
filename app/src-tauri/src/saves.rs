@@ -489,7 +489,8 @@ fn collect_hex16_dirs(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
 /// Integration links several more (Desktop, Downloads, Music, Pictures,
 /// Videos) out to the real home directory, but no game keeps its save
 /// in Pictures, and listing them would bury the two that matter.
-const PROFILE_SAVE_FOLDERS: [&str; 4] = ["Documents", "My Documents", "Saved Games", "AppData"];
+pub(crate) const PROFILE_SAVE_FOLDERS: [&str; 4] =
+    ["Documents", "My Documents", "Saved Games", "AppData"];
 
 /// Names of the profile folders in this prefix that are symlinks
 /// pointing outside it.

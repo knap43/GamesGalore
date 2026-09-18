@@ -548,7 +548,6 @@
     color: var(--text-muted);
     letter-spacing: 0.02em;
   }
-  .badge.recent { color: #ffd7ea; background: rgba(255,79,158,0.32); }
 
   .platform-tag {
     position: absolute;
@@ -1398,27 +1397,27 @@ const GENRE_STYLES = {
 
 /* Mock catalog, used only as a browser-preview fallback when this file
    isn't running inside the actual Tauri app (see loadGames() below).
-   Note the schema gap versus real data: genre, hours, and lastPlayed
-   are mock-only conveniences the server doesn't track — every place
-   that reads them checks for their presence first rather than
-   assuming they exist. */
+   Note the schema gap versus real data: `hours` is filled in from the
+   local playtime record rather than by the server, and `sizeGB` is a
+   mock-only convenience — every place that reads either checks for its
+   presence first rather than assuming it exists. */
 const MOCK_GAMES = [
-  { title: 'Hollow Meridian',     genre: 'RPG',        hours: 76, lastPlayedDaysAgo: 0,  platform: 'PC', sizeGB: 38.4 },
-  { title: 'Ironclad Vanguard',   genre: 'Strategy',    hours: 65, lastPlayedDaysAgo: 2,  platform: 'PC', sizeGB: 12.1 },
-  { title: 'Ashfall Chronicles',  genre: 'RPG',        hours: 42, lastPlayedDaysAgo: 5,  platform: 'PS2', sizeGB: 3.8 },
-  { title: 'Paperclip Dynasty',   genre: 'Strategy',    hours: 51, lastPlayedDaysAgo: 9,  platform: 'PC', sizeGB: 6.7 },
-  { title: 'Deadlight Protocol',  genre: 'Shooter',     hours: 38, lastPlayedDaysAgo: 1,  platform: 'PS2', sizeGB: 4.2 },
-  { title: 'Scrapyard Legion',    genre: 'Shooter',     hours: 31, lastPlayedDaysAgo: 14, platform: 'PC', sizeGB: 15.9 },
-  { title: 'Crimson Undertow',    genre: 'Action',      hours: 27, lastPlayedDaysAgo: 6,  platform: 'Switch', sizeGB: 8.3 },
-  { title: 'Glasswing Requiem',   genre: 'Adventure',   hours: 23, lastPlayedDaysAgo: 20, platform: 'PS1', sizeGB: 0.6 },
-  { title: 'Voltgrid Arena',      genre: 'Sports',      hours: 22, lastPlayedDaysAgo: 3,  platform: 'Switch', sizeGB: 5.1 },
-  { title: 'Tidebreaker',         genre: 'Simulation',  hours: 19, lastPlayedDaysAgo: 30, platform: 'PC', sizeGB: 9.4 },
-  { title: 'Static Choir',        genre: 'Adventure',   hours: 14, lastPlayedDaysAgo: 45, platform: 'PS1', sizeGB: 0.5 },
-  { title: 'Nebula Drift',        genre: 'Racing',      hours: 12, lastPlayedDaysAgo: 11, platform: 'PS1', sizeGB: 0.4 },
-  { title: 'Wraith Hollow',       genre: 'Horror',      hours: 8,  lastPlayedDaysAgo: 60, platform: 'PS2', sizeGB: 2.9 },
-  { title: 'Bramblewood',         genre: 'Indie',       hours: 6,  lastPlayedDaysAgo: 40, platform: 'Switch', sizeGB: 1.2 },
-  { title: 'Ferrofluid',          genre: 'Puzzle',      hours: 5,  lastPlayedDaysAgo: 25, platform: 'Switch', sizeGB: 0.8, installed: false },
-  { title: 'Moth & Ember',        genre: 'Indie',       hours: 3,  lastPlayedDaysAgo: 70, platform: 'PC', sizeGB: 0.3, installed: false },
+  { title: 'Hollow Meridian',     genre: 'RPG',        hours: 76, platform: 'PC', sizeGB: 38.4 },
+  { title: 'Ironclad Vanguard',   genre: 'Strategy',    hours: 65, platform: 'PC', sizeGB: 12.1 },
+  { title: 'Ashfall Chronicles',  genre: 'RPG',        hours: 42, platform: 'PS2', sizeGB: 3.8 },
+  { title: 'Paperclip Dynasty',   genre: 'Strategy',    hours: 51, platform: 'PC', sizeGB: 6.7 },
+  { title: 'Deadlight Protocol',  genre: 'Shooter',     hours: 38, platform: 'PS2', sizeGB: 4.2 },
+  { title: 'Scrapyard Legion',    genre: 'Shooter',     hours: 31, platform: 'PC', sizeGB: 15.9 },
+  { title: 'Crimson Undertow',    genre: 'Action',      hours: 27, platform: 'Switch', sizeGB: 8.3 },
+  { title: 'Glasswing Requiem',   genre: 'Adventure',   hours: 23, platform: 'PS1', sizeGB: 0.6 },
+  { title: 'Voltgrid Arena',      genre: 'Sports',      hours: 22, platform: 'Switch', sizeGB: 5.1 },
+  { title: 'Tidebreaker',         genre: 'Simulation',  hours: 19, platform: 'PC', sizeGB: 9.4 },
+  { title: 'Static Choir',        genre: 'Adventure',   hours: 14, platform: 'PS1', sizeGB: 0.5 },
+  { title: 'Nebula Drift',        genre: 'Racing',      hours: 12, platform: 'PS1', sizeGB: 0.4 },
+  { title: 'Wraith Hollow',       genre: 'Horror',      hours: 8, platform: 'PS2', sizeGB: 2.9 },
+  { title: 'Bramblewood',         genre: 'Indie',       hours: 6, platform: 'Switch', sizeGB: 1.2 },
+  { title: 'Ferrofluid',          genre: 'Puzzle',      hours: 5, platform: 'Switch', sizeGB: 0.8, installed: false },
+  { title: 'Moth & Ember',        genre: 'Indie',       hours: 3, platform: 'PC', sizeGB: 0.3, installed: false },
 ].map((g, i) => ({ installed: true, ...g, id: String(i) }));
 
 let GAMES = [];
@@ -1597,12 +1596,17 @@ async function loadGames() {
 
 /* Real playtime, from the local record the launcher keeps.
 
-   The two fields this fills in — `hours` and `lastPlayedDaysAgo` —
-   already drive the card sub-line, the detail header and two of the
-   four sort options. Until now only the mock catalog had them, which
-   meant "Recently played" and "Playtime" were a no-op dressed up as a
-   feature for anyone with a real library. Nothing below had to change
-   to make them work; the numbers simply had to exist. */
+   The field this fills in — `hours` — already drives the card
+   sub-line, the detail header and one of the sort options. Until the
+   launcher started recording sessions, only the mock catalog had it,
+   so sorting a real library by playtime was a no-op dressed up as a
+   feature. Nothing below had to change to make it work; the number
+   simply had to exist.
+
+   When a game was last played is deliberately not recorded. It bought
+   one sort order and a line in the detail header that read "Last
+   played Playing now" while a game was open, and nothing here needs
+   to know. */
 async function loadPlaytime() {
   if (!TAURI) return;
 
@@ -1619,12 +1623,11 @@ async function loadPlaytime() {
 }
 
 /* Left undefined rather than zeroed for a game nobody has played:
-   every renderer here checks `typeof` before showing either field, so
-   an absent value prints nothing at all, while a 0 would print "0h
-   played" under every title in the library. */
+   every renderer here checks `typeof` before showing it, so an absent
+   value prints nothing at all, while a 0 would print "0h played" under
+   every title in the library. */
 function applyPlaytime(game, entry) {
   delete game.hours;
-  delete game.lastPlayedDaysAgo;
   if (!entry) return;
 
   // Under a minute isn't playtime — the backend already declines to
@@ -1633,10 +1636,6 @@ function applyPlaytime(game, entry) {
     game.hours = entry.seconds >= 36000
       ? Math.round(entry.seconds / 3600)          // 10h+: whole hours
       : Math.round(entry.seconds / 360) / 10;     // below that, one decimal
-  }
-  if (entry.last_played > 0) {
-    const daysAgo = Math.floor((Date.now() / 1000 - entry.last_played) / 86400);
-    game.lastPlayedDaysAgo = Math.max(0, daysAgo);
   }
 }
 
@@ -2177,11 +2176,14 @@ function setSaveNote(game, message, good = true) {
    those links — what a prefix points out at is the user's own files,
    not this game's save data. The consequence is that a game saving to
    Documents has its save quietly left behind, with nothing about the
-   sync looking wrong. This is the only place that says so.
+   sync looking wrong.
 
-   Checked when the detail view opens rather than at launch: by the
-   time someone is pressing Play it is too late to be useful, and the
-   remedy is a change in winecfg rather than anything this app can do. */
+   The launcher now replaces those links with real directories when it
+   creates a prefix, so this only ever fires for a prefix made before
+   that — or by something else — where a game may already have saved
+   through the link. That is precisely the case the app must not fix on
+   its own: cutting the link would leave the existing save outside,
+   which looks exactly like losing it. */
 async function checkPrefixCoverage(game) {
   if (!saveSyncApplies(game) || game.platform !== 'PC') return;
 
@@ -2197,9 +2199,10 @@ async function checkPrefixCoverage(game) {
 
   const folders = status.unsynced.join(' and ');
   const el = document.getElementById('install-error');
-  el.textContent = `${folders} in this game's Wine prefix link to your home folder, `
-    + 'so anything saved there is not synced. Run winecfg on the prefix and unlink them '
-    + 'under Desktop Integration to bring those saves in.';
+  el.textContent = `${folders} in this game's Wine prefix link out to your home folder, `
+    + 'so anything saved there is not synced. Newer prefixes keep these inside themselves; '
+    + 'this one predates that. Move whatever this game saved there into the prefix — or '
+    + 'unlink the folders in winecfg under Desktop Integration — and it will be picked up.';
   el.classList.remove('is-good');
   el.classList.add('is-info');
   el.style.display = 'block';
@@ -2239,8 +2242,8 @@ let state = {
   installedOnly: false,
   query: '',
   sort: 'alpha', // persisted with the rest of the settings; the pills in the
-                 // topbar change it. Both time-based orders do real work now
-                 // that the launcher records playtime.
+                 // topbar change it. Sorting by playtime does real work now
+                 // that the launcher records it.
   soundEnabled: true,
   serverBase: '',
   installRoot: '',
@@ -2548,12 +2551,12 @@ async function retryLibrary() {
   if (!libraryUnreachable) focusNoScroll(document.getElementById('search'));
 }
 
-/* The four orders, in the order they appear. "Recent" and "Playtime"
-   are only meaningful because the launcher now records both; before
-   that, this control was removed rather than left offering two options
-   that quietly did nothing. */
+/* The three orders, in the order they appear. "Playtime" is only
+   meaningful because the launcher records it; this control was
+   originally removed rather than left offering options that quietly
+   did nothing, which is also why there is no "Recently played" here —
+   nothing records when a game was last opened, by design. */
 const SORT_OPTIONS = [
-  { value: 'recent',   label: 'Recent' },
   { value: 'playtime', label: 'Playtime' },
   { value: 'alpha',    label: 'A–Z' },
   { value: 'platform', label: 'Platform' },
@@ -2601,9 +2604,7 @@ function getFilteredSortedGames() {
       a.title.localeCompare(b.title)
     );
   } else {
-    // Never played sorts last, not first: Infinity rather than 0.
-    const lastPlayed = g => (typeof g.lastPlayedDaysAgo === 'number' ? g.lastPlayedDaysAgo : Infinity);
-    list = list.slice().sort((a, b) => lastPlayed(a) - lastPlayed(b) || a.title.localeCompare(b.title));
+    list = list.slice().sort((a, b) => a.title.localeCompare(b.title));
   }
   return list;
 }
@@ -2615,14 +2616,6 @@ function initials(title) {
     .slice(0, 2)
     .map(w => w[0].toUpperCase())
     .join('');
-}
-
-function formatLastPlayed(days) {
-  if (days === 0) return 'Playing now';
-  if (days === 1) return 'Yesterday';
-  if (days < 7) return `${days} days ago`;
-  if (days < 30) return `${Math.round(days / 7)}w ago`;
-  return `${Math.round(days / 30)}mo ago`;
 }
 
 function formatSize(sizeGB) {
@@ -2668,7 +2661,6 @@ function cardSubLine(g) {
 
 function cardHTML(g) {
   const style = GENRE_STYLES[g.genre] || GENRE_STYLES.Indie;
-  const recent = typeof g.lastPlayedDaysAgo === 'number' && g.lastPlayedDaysAgo <= 2;
   const coverInner = g.cover
     ? `<img class="cover-image" src="${g.cover}" alt="${g.title}" loading="lazy">`
     : `<div class="monogram">${initials(g.title)}</div>`;
@@ -2677,7 +2669,6 @@ function cardHTML(g) {
       <div class="cover" style="background:${style.grad}">
         <span class="platform-tag">${g.platform}</span>
         ${coverInner}
-        ${recent ? `<span class="badge recent">${formatLastPlayed(g.lastPlayedDaysAgo)}</span>` : ''}
       </div>
       <div class="meta">
         <p class="title">${g.title}</p>
@@ -2814,12 +2805,11 @@ function detailMetaHTML(game) {
   const segs = [];
   if (game.genre) segs.push(`<span class="genre-pill">${game.genre}</span>`);
   segs.push(`<span>${game.platform}</span>`);
+  // The year is a fact about the game and belongs with the other
+  // facts about it; playtime is a fact about this machine, so it goes
+  // last rather than in place of anything.
+  if (game.release_year) segs.push(`<span>${game.release_year}</span>`);
   if (typeof game.hours === 'number') segs.push(`<span>${game.hours}h played</span>`);
-  if (typeof game.lastPlayedDaysAgo === 'number') {
-    segs.push(`<span>Last played ${formatLastPlayed(game.lastPlayedDaysAgo)}</span>`);
-  } else if (game.release_year) {
-    segs.push(`<span>${game.release_year}</span>`);
-  }
   return segs.join('<span class="dot-sep"></span>');
 }
 

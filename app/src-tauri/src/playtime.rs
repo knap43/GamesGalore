@@ -1,12 +1,16 @@
-// How long each game has been played, and when it was last opened.
+// How long each game has been played.
 //
-// The UI has offered "Recently played" and "Playtime" as sort options
-// since the first version, and for real games both did nothing at all:
-// the mock catalog carried `hours` and `lastPlayedDaysAgo` fields the
-// server has no idea about, so sorting a real library by either was a
-// no-op dressed up as a feature. Everything needed to fill them in was
-// already there — the launcher knows when a game starts, and the exit
-// supervision it added for cloud saves knows when it stops.
+// The UI has offered "Playtime" as a sort option since the first
+// version, and for real games it did nothing at all: the mock catalog
+// carried an `hours` field the server has no idea about, so sorting a
+// real library by it was a no-op dressed up as a feature. Everything
+// needed to fill it in was already there — the launcher knows when a
+// game starts, and the exit supervision it added for cloud saves knows
+// when it stops.
+//
+// When a game was last played is deliberately not recorded. It bought
+// one sort order and a line in the detail header, and the line read
+// "Last played Playing now" for as long as a game was open.
 //
 // Stored as a flat JSON map beside installs.json, written once per
 // session rather than on a timer: a session that ends because the
@@ -24,8 +28,6 @@ use tauri::{AppHandle, Emitter, Manager};
 pub struct Playtime {
     /// Total seconds across every recorded session.
     pub seconds: u64,
-    /// When the game was last launched, seconds since the epoch.
-    pub last_played: u64,
     pub sessions: u32,
 }
 
@@ -65,25 +67,12 @@ pub fn get_playtime(app: AppHandle) -> PlaytimeMap {
     load(&app)
 }
 
-/// Records that a game has just been launched. The session's length is
-/// not known yet, so only the timestamp moves — which is enough for
-/// "Recently played" to be right the moment a game opens, rather than
-/// only after it closes.
-pub fn started(app: &AppHandle, game_id: &str) {
-    let mut map = load(app);
-    let entry = map.entry(game_id.to_string()).or_default();
-    entry.last_played = now();
-    let updated = entry.clone();
-    let _ = save(app, &map);
-    let _ = app.emit("playtime:changed", (game_id, updated));
-}
-
 /// Records a finished session of `seconds`, and pushes the new total to
 /// the frontend so a sort by playtime is correct without a restart.
 pub fn finished(app: &AppHandle, game_id: &str, seconds: u64) {
     let mut map = load(app);
     let entry = map.entry(game_id.to_string()).or_default();
-    *entry = accumulate(entry, seconds, now());
+    *entry = accumulate(entry, seconds);
     let updated = entry.clone();
     let _ = save(app, &map);
     let _ = app.emit("playtime:changed", (game_id, updated));
@@ -97,7 +86,7 @@ pub fn finished(app: &AppHandle, game_id: &str, seconds: u64) {
 /// immediately because it opened on the wrong monitor, is not playtime,
 /// and a library where every mis-click adds a minute stops being a
 /// useful sort within a week.
-fn accumulate(current: &Playtime, seconds: u64, ended_at: u64) -> Playtime {
+fn accumulate(current: &Playtime, seconds: u64) -> Playtime {
     const MINIMUM_SESSION: u64 = 60;
     // A session longer than this is not a session, it is a game left
     // running overnight. Counted at the cap rather than discarded,
@@ -112,7 +101,6 @@ fn accumulate(current: &Playtime, seconds: u64, ended_at: u64) -> Playtime {
 
     Playtime {
         seconds: current.seconds.saturating_add(counted),
-        last_played: ended_at.max(current.last_played),
         sessions: current.sessions.saturating_add(1),
     }
 }
@@ -121,26 +109,18 @@ fn accumulate(current: &Playtime, seconds: u64, ended_at: u64) -> Playtime {
 mod tests {
     use super::*;
 
-    fn at(seconds: u64, last_played: u64, sessions: u32) -> Playtime {
-        Playtime {
-            seconds,
-            last_played,
-            sessions,
-        }
+    fn at(seconds: u64, sessions: u32) -> Playtime {
+        Playtime { seconds, sessions }
     }
 
     #[test]
     fn a_session_adds_to_the_total() {
-        let after = accumulate(&at(3600, 1000, 1), 1800, 5000);
-        assert_eq!(after, at(5400, 5000, 2));
+        assert_eq!(accumulate(&at(3600, 1), 1800), at(5400, 2));
     }
 
     #[test]
     fn a_first_session_starts_from_nothing() {
-        assert_eq!(
-            accumulate(&Playtime::default(), 600, 5000),
-            at(600, 5000, 1)
-        );
+        assert_eq!(accumulate(&Playtime::default(), 600), at(600, 1));
     }
 
     #[test]
@@ -148,29 +128,22 @@ mod tests {
         // Wrong monitor, missing dependency, changed their mind — all
         // of these open and close a game without playing it, and a
         // sort that counts them stops being useful within a week.
-        let after = accumulate(&at(3600, 1000, 1), 12, 5000);
+        let after = accumulate(&at(3600, 1), 12);
         assert_eq!(after.seconds, 3600, "no time should have been added");
         assert_eq!(after.sessions, 2, "but it was still a launch");
-        assert_eq!(after.last_played, 5000, "and it was still recent");
     }
 
     #[test]
     fn a_game_left_running_overnight_is_capped() {
-        let after = accumulate(&Playtime::default(), 30 * 60 * 60, 5000);
-        assert_eq!(after.seconds, 12 * 60 * 60);
-    }
-
-    #[test]
-    fn a_clock_that_went_backwards_does_not_rewrite_history() {
-        // Whether by NTP or by someone changing the timezone: the most
-        // recent play is still the most recent play.
-        let after = accumulate(&at(3600, 9000, 1), 600, 5000);
-        assert_eq!(after.last_played, 9000);
+        assert_eq!(
+            accumulate(&Playtime::default(), 30 * 60 * 60).seconds,
+            12 * 60 * 60
+        );
     }
 
     #[test]
     fn totals_saturate_rather_than_wrapping() {
-        let after = accumulate(&at(u64::MAX, 0, u32::MAX), 600, 5000);
+        let after = accumulate(&at(u64::MAX, u32::MAX), 600);
         assert_eq!(after.seconds, u64::MAX);
         assert_eq!(after.sessions, u32::MAX);
     }

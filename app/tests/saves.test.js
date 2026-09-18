@@ -359,7 +359,9 @@ async function boot(opts = {}) {
   const prefixNote = t.doc.getElementById('install-error');
   check('a prefix that links its save folders out says so', prefixNote.style.display, 'block');
   check('...naming the folders', prefixNote.textContent.includes('Documents and Saved Games'), true);
-  check('...and the remedy', prefixNote.textContent.includes('winecfg'), true);
+  check('...and what to do about it', prefixNote.textContent.includes('winecfg'), true);
+  check('...and that newer prefixes do not have the problem',
+        prefixNote.textContent.includes('Newer prefixes keep these inside themselves'), true);
   check('...in the neutral tone, not as a failure',
         [prefixNote.classList.contains('is-info'), prefixNote.classList.contains('is-good')], [true, false]);
 

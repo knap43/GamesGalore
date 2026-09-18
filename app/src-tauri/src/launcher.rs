@@ -9,7 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use tauri::{AppHandle, Emitter};
 
-use crate::settings::{get_settings, Settings};
+use crate::settings::{get_settings, EmulatorConfig, Settings};
 
 /// The part of the launch command that's fixed per platform —
 /// fullscreen flags and where the game path goes — independent of
@@ -276,6 +276,105 @@ fn find_local_game_file(install_dir: &Path, platform: &str) -> Option<PathBuf> {
 ///
 /// Defaults to `.wine-prefixes` beside the install root, so this needs
 /// no configuration; `prefix_root` in settings overrides it.
+/// Creates a Wine prefix up front, so the app decides what is in it
+/// rather than discovering afterwards what Wine decided.
+///
+/// `wineboot -i` is what Wine runs implicitly on first use; running it
+/// deliberately just means it happens at a moment when the prefix is
+/// known to be empty, which is the only moment `isolate_profile_links`
+/// can safely do its work. Run through the configured emulator command
+/// rather than a bare `wine`, so a Flatpak install works the same way
+/// (`flatpak run … wineboot -i`).
+///
+/// Best-effort: if this fails — no Wine, an unusual wrapper, a
+/// permissions problem — the game is launched anyway and Wine creates
+/// the prefix itself, exactly as it did before. The cost is the linked
+/// folders coming back, which the UI already reports.
+fn initialise_prefix(emu: &EmulatorConfig, prefix: &Path) -> Result<(), String> {
+    let mut args = emu.args_prefix.clone();
+    args.push("wineboot".to_string());
+    args.push("-i".to_string());
+
+    let status = Command::new(&emu.command)
+        .args(&args)
+        .env("WINEPREFIX", prefix)
+        // Wine asks about installing Mono and Gecko in a dialog that
+        // would sit there unanswered behind the launch. Neither is
+        // needed to create the profile directories this is here for.
+        .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
+        .status()
+        .map_err(|e| format!("running wineboot: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("wineboot exited with {status}"));
+    }
+    Ok(())
+}
+
+/// Replaces the profile folders Wine links out to the real home
+/// directory with real directories inside the prefix.
+///
+/// Wine's Desktop Integration points `Documents`, `Saved Games` and
+/// the rest at `$HOME`, which defeats the entire purpose of a per-game
+/// prefix: a game that saves to Documents writes outside the prefix,
+/// where the archive deliberately will not follow it. Until now the app
+/// could only notice this and tell someone to fix it in winecfg.
+///
+/// `force` is the whole safety story. On a prefix this app just
+/// created there is nothing behind those links yet, so replacing them
+/// cannot lose anything. On an existing prefix it is only done for a
+/// link whose target is missing or empty — because a game may already
+/// have written saves through it, and quietly cutting them off would
+/// look exactly like losing them.
+///
+/// Returns the folders it changed.
+pub fn isolate_profile_links(prefix: &Path, force: bool) -> Vec<String> {
+    let users = prefix.join("drive_c").join("users");
+    let Ok(profiles) = std::fs::read_dir(&users) else {
+        return Vec::new();
+    };
+    let inside = std::fs::canonicalize(prefix).unwrap_or_else(|_| prefix.to_path_buf());
+
+    let mut changed: Vec<String> = Vec::new();
+    for profile in profiles.flatten() {
+        for name in crate::saves::PROFILE_SAVE_FOLDERS {
+            let candidate = profile.path().join(name);
+            let Ok(meta) = std::fs::symlink_metadata(&candidate) else {
+                continue;
+            };
+            if !meta.file_type().is_symlink() {
+                continue; // already a real directory; nothing to do
+            }
+
+            let target = std::fs::canonicalize(&candidate);
+            if let Ok(target) = &target {
+                if target.starts_with(&inside) {
+                    continue; // points back into the prefix, so it is captured anyway
+                }
+            }
+
+            let nothing_to_lose = match &target {
+                Err(_) => true, // dangling: nothing can have been saved through it
+                Ok(target) => std::fs::read_dir(target)
+                    .map(|mut entries| entries.next().is_none())
+                    .unwrap_or(false),
+            };
+            if !force && !nothing_to_lose {
+                continue;
+            }
+
+            if std::fs::remove_file(&candidate).is_ok()
+                && std::fs::create_dir_all(&candidate).is_ok()
+            {
+                changed.push(name.to_string());
+            }
+        }
+    }
+    changed.sort();
+    changed.dedup();
+    changed
+}
+
 pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<PathBuf> {
     if platform != "PC" {
         return None;
@@ -339,8 +438,27 @@ fn supervise(
 /// by list_launch_candidates — the UI's picker passes back whichever
 /// entry is selected. Left unset, the automatic choice is used, which
 /// is what happens for every title that only has one candidate.
+/// Preparing a Wine prefix runs `wineboot`, which takes seconds the
+/// first time a game is played. A synchronous Tauri command runs on the
+/// main thread, so doing that here would freeze the window mid-launch —
+/// hence the hop onto a blocking thread. Everything the frontend sees
+/// is unchanged: it awaits this the same way it always did.
 #[tauri::command]
-pub fn launch_game(
+pub async fn launch_game(
+    app: AppHandle,
+    install_dir: String,
+    platform: String,
+    game_id: String,
+    executable: Option<String>,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        launch_blocking(app, install_dir, platform, game_id, executable)
+    })
+    .await
+    .map_err(|e| format!("launching failed: {e}"))?
+}
+
+fn launch_blocking(
     app: AppHandle,
     install_dir: String,
     platform: String,
@@ -385,12 +503,31 @@ pub fn launch_game(
 
     let prefix = prefix_dir(&settings, &platform, &game_id);
     if let Some(prefix) = &prefix {
-        // Wine creates a missing prefix itself on first run; this just
-        // makes sure the parent exists so it has somewhere to do that.
         if let Some(parent) = prefix.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("creating {}: {e}", parent.display()))?;
         }
+
+        // A prefix that doesn't exist yet is created here rather than
+        // implicitly by the game, purely so that the moment it exists
+        // and is empty is a moment this app is present for. That is
+        // the only point at which the linked-out profile folders can
+        // be replaced without any chance of cutting a game off from
+        // saves it has already written.
+        let fresh = !prefix.exists();
+        if fresh {
+            if let Err(e) = initialise_prefix(emu, prefix) {
+                // Not fatal: Wine will create the prefix itself, the
+                // links will be there, and the UI will say so.
+                eprintln!("could not prepare {}: {e}", prefix.display());
+            }
+        }
+
+        let isolated = isolate_profile_links(prefix, fresh);
+        if !isolated.is_empty() {
+            eprintln!("kept {} inside {}", isolated.join(", "), prefix.display());
+        }
+
         command.env("WINEPREFIX", prefix);
     }
 
@@ -399,11 +536,6 @@ pub fn launch_game(
     let child = command
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
-
-    // Recorded before the session rather than after it, so a game
-    // shows as "just played" the moment it opens instead of only once
-    // it closes — which for a long session is hours later.
-    crate::playtime::started(&app, &game_id);
 
     supervise(app, child, game_id, prefix);
     Ok(())
@@ -453,6 +585,123 @@ mod tests {
             fs::write(&path, vec![0u8; *size]).unwrap();
         }
         root
+    }
+
+    /// A prefix with a Windows profile in it, plus a home directory
+    /// for its folders to link out to, the way Wine leaves one.
+    fn prefix_fixture(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        let base = std::env::temp_dir().join(format!(
+            "gg-prefix-test-{}-{}-{name}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let prefix = base.join("prefix");
+        let users = prefix.join("drive_c/users/you");
+        let home = base.join("home");
+        fs::create_dir_all(&users).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        (base, prefix, home)
+    }
+
+    fn link(from: &Path, to: &Path) {
+        fs::create_dir_all(from.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(to, from).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_prefix_keeps_its_save_folders_to_itself() {
+        // The moment a prefix is created is the only moment these can
+        // be replaced with certainty that nothing is behind them.
+        let (base, prefix, home) = prefix_fixture("fresh");
+        let users = prefix.join("drive_c/users/you");
+        fs::create_dir_all(home.join("Documents")).unwrap();
+        fs::write(home.join("Documents/tax-return.pdf"), "mine").unwrap();
+        link(&users.join("Documents"), &home.join("Documents"));
+        link(&users.join("Saved Games"), &home);
+
+        let changed = isolate_profile_links(&prefix, true);
+
+        assert_eq!(changed, vec!["Documents", "Saved Games"]);
+        for name in ["Documents", "Saved Games"] {
+            let path = users.join(name);
+            assert!(path.is_dir(), "{name} should be a real directory now");
+            assert!(
+                !fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{name} should not be a link"
+            );
+            assert_eq!(fs::read_dir(&path).unwrap().count(), 0, "{name} is empty");
+        }
+        // The user's own files are untouched: only the link was removed.
+        assert_eq!(
+            fs::read_to_string(home.join("Documents/tax-return.pdf")).unwrap(),
+            "mine"
+        );
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_existing_prefix_keeps_a_link_that_has_something_behind_it() {
+        // A game may already have saved through this one, and cutting
+        // it off silently would look exactly like losing the save.
+        let (base, prefix, home) = prefix_fixture("existing-full");
+        let users = prefix.join("drive_c/users/you");
+        fs::create_dir_all(home.join("Documents/ULTRAKILL")).unwrap();
+        fs::write(home.join("Documents/ULTRAKILL/slot1.bepis"), "act III").unwrap();
+        link(&users.join("Documents"), &home.join("Documents"));
+
+        assert!(isolate_profile_links(&prefix, false).is_empty());
+        assert!(fs::symlink_metadata(users.join("Documents"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_existing_prefix_reclaims_a_link_with_nothing_behind_it() {
+        let (base, prefix, home) = prefix_fixture("existing-empty");
+        let users = prefix.join("drive_c/users/you");
+        fs::create_dir_all(home.join("Documents")).unwrap();
+        link(&users.join("Documents"), &home.join("Documents"));
+        // Dangling: the target was never created at all.
+        link(&users.join("Saved Games"), &home.join("Saved Games"));
+
+        let changed = isolate_profile_links(&prefix, false);
+
+        assert_eq!(changed, vec!["Documents", "Saved Games"]);
+        assert!(users.join("Documents").is_dir());
+        assert!(users.join("Saved Games").is_dir());
+
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_real_directory_and_an_inward_link_are_both_left_alone() {
+        let (base, prefix, _home) = prefix_fixture("already-fine");
+        let users = prefix.join("drive_c/users/you");
+        fs::create_dir_all(users.join("Documents/ULTRAKILL")).unwrap();
+        fs::create_dir_all(users.join("AppData/Roaming")).unwrap();
+        // A link that stays inside the prefix is captured by the
+        // archive anyway, so there is nothing to fix.
+        link(&users.join("Saved Games"), &users.join("AppData/Roaming"));
+
+        assert!(isolate_profile_links(&prefix, true).is_empty());
+        assert!(users.join("Documents/ULTRAKILL").is_dir());
+        assert!(fs::symlink_metadata(users.join("Saved Games"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

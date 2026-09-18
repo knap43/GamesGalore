@@ -137,12 +137,19 @@ gap.
 
 ### Playtime
 
-The UI offered "Recently played" and "Playtime" as sort options from the first
-version, and for a real library both did nothing: those fields existed only on
-the mock catalog. Everything needed to fill them in was already here — the
-launcher knows when a game starts, and the exit supervision added for cloud
-saves knows when it stops — so `playtime.rs` records both in `playtime.json` and
-pushes each change to the frontend, which needed no new rendering to use them.
+The UI offered "Playtime" as a sort option from the first version, and for a
+real library it did nothing: that field existed only on the mock catalog.
+Everything needed to fill it in was already here — the launcher knows when a
+game starts, and the exit supervision added for cloud saves knows when it stops
+— so `playtime.rs` records it in `playtime.json` and pushes each change to the
+frontend, which needed no new rendering to use it.
+
+When a game was last played is deliberately **not** recorded. It bought one sort
+order and a line in the detail header that read "Last played Playing now" for as
+long as a game was open, and nothing else here has any use for it. The header
+shows the release year and the hours side by side instead — the year is a fact
+about the game, the hours a fact about this machine, so the second is added
+after the first rather than in place of it.
 
 A session is timed from launch to *after* `wineserver -w` returns, not to the
 emulator process exiting: for a PC game that process is Wine's launcher, which
@@ -160,7 +167,8 @@ rewriting the file every minute for the lifetime of every game anyone plays.
 The sort control came back with it, as pills rather than a dropdown — WebKitGTK
 draws a native `<select>` itself and ignores this stylesheet entirely, which is
 why the original was removed and why the launch picker is a custom listbox too.
-The chosen order is persisted with the rest of the settings.
+It offers playtime, A–Z and platform; the chosen order is persisted with the
+rest of the settings.
 
 ### Resuming, and fetching a title in one request
 
@@ -368,12 +376,27 @@ each game has its own.
 prefix's `Documents`, `Saved Games` and friends at the real home directory, and
 the archive deliberately refuses to follow those links — what a prefix points
 *out* at is the user's own files, not this game's save data, and following them
-once meant archiving an entire home directory and then looping, since the
-prefix lives under it. The consequence is that a game saving to Documents has
-its save quietly left behind, with nothing about the sync looking wrong. Opening
-such a game's detail view now says so, names the folders, and points at the
-winecfg setting that fixes it. A link that stays inside the prefix, or a
-dangling one, is not reported: neither is a hole.
+once meant archiving an entire home directory and then looping, since the prefix
+lives under it. The consequence was that a game saving to Documents had its save
+quietly left behind, with nothing about the sync looking wrong.
+
+The launcher now prevents it rather than reporting it. When a game's prefix
+doesn't exist yet, `initialise_prefix` runs `wineboot -i` through the configured
+emulator command — so a Flatpak Wine works the same way — and
+`isolate_profile_links` then replaces those links with real directories inside
+the prefix. The prefix is empty at that moment, which is the entire safety
+argument: nothing can have been saved through a link that has existed for a
+second. Every game installed from here on is unaffected by the problem.
+
+For a prefix that already exists, the same replacement is only done for a link
+whose target is missing or empty. Where a game may already have written saves
+through one, the app leaves it alone and says so, because cutting the link would
+leave that save outside the prefix — which looks exactly like losing it. Moving
+it in is the one step that still needs a person, and the notice explains it.
+
+Running `wineboot` takes seconds on a first launch, so `launch_game` now hops
+onto a blocking thread: a synchronous Tauri command runs on the main thread, and
+freezing the window mid-launch would be a poor trade for a tidier prefix.
 
 **The save token.** If the server has `SAVE_TOKEN` set, put the same value in
 Settings under cloud saves and every save request carries it as a bearer token.
