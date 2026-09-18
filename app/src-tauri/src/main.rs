@@ -4,6 +4,7 @@ mod install_state;
 mod launcher;
 mod migrate;
 mod playtime;
+mod prefix_migrate;
 mod saves;
 mod server;
 mod settings;

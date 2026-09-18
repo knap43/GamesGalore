@@ -409,8 +409,10 @@ fn supervise(
     mut child: std::process::Child,
     game_id: String,
     prefix: Option<PathBuf>,
+    watching: Vec<crate::prefix_migrate::LinkSnapshot>,
 ) {
     let started_at = crate::playtime::now();
+    let session_began = crate::prefix_migrate::now_millis();
     std::thread::spawn(move || {
         let _ = child.wait();
         if let Some(prefix) = prefix {
@@ -418,6 +420,20 @@ fn supervise(
                 .arg("-w")
                 .env("WINEPREFIX", &prefix)
                 .status();
+        }
+
+        // Only ever non-empty for a prefix that already had its save
+        // folders linked out to the home directory. Now that the game
+        // has run and stopped, the difference between the two pictures
+        // of that directory is the folder it writes its saves to —
+        // which is the folder to bring inside the prefix, where the
+        // sync can actually see it.
+        if !watching.is_empty() {
+            let migrated = crate::prefix_migrate::migrate_after_session(&watching, session_began);
+            if !migrated.moved.is_empty() {
+                eprintln!("brought {} into the prefix", migrated.moved.join(", "));
+                let _ = app.emit("prefix:saves-moved", (&game_id, &migrated));
+            }
         }
         // Recorded after wineserver has gone: for a PC game the
         // emulator process is wine's launcher, which returns long
@@ -502,6 +518,7 @@ fn launch_blocking(
     }
 
     let prefix = prefix_dir(&settings, &platform, &game_id);
+    let mut watching = Vec::new();
     if let Some(prefix) = &prefix {
         if let Some(parent) = prefix.parent() {
             std::fs::create_dir_all(parent)
@@ -528,6 +545,15 @@ fn launch_blocking(
             eprintln!("kept {} inside {}", isolated.join(", "), prefix.display());
         }
 
+        // Anything still linked out belongs to a prefix that predates
+        // this, and may already hold saves. Rather than cut it — or
+        // ask someone to — take a picture of it now and work out from
+        // the session itself which folder is this game's. Only worth
+        // doing when the saves are being synced at all.
+        if settings.save_sync.enabled {
+            watching = crate::prefix_migrate::snapshot(prefix);
+        }
+
         command.env("WINEPREFIX", prefix);
     }
 
@@ -537,7 +563,7 @@ fn launch_blocking(
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
 
-    supervise(app, child, game_id, prefix);
+    supervise(app, child, game_id, prefix, watching);
     Ok(())
 }
 

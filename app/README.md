@@ -15,6 +15,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
+| `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
 | `playtime.rs` | `playtime.json` beside them: seconds played, last played and a session count per game, recorded by the launcher. See **Playtime** below. |
 | `saves.rs` | Locates a game's save data, packs it as a tar.gz and syncs it with the server. See **Cloud saves** below. |
 
@@ -389,10 +390,34 @@ argument: nothing can have been saved through a link that has existed for a
 second. Every game installed from here on is unaffected by the problem.
 
 For a prefix that already exists, the same replacement is only done for a link
-whose target is missing or empty. Where a game may already have written saves
-through one, the app leaves it alone and says so, because cutting the link would
-leave that save outside the prefix — which looks exactly like losing it. Moving
-it in is the one step that still needs a person, and the notice explains it.
+whose target is missing or empty — where a game may already have written saves
+through one, cutting it would leave that save outside the prefix, which looks
+exactly like losing it.
+
+That case is resolved by watching a session instead, in `prefix_migrate.rs`. The
+trick is the one that already identifies a Switch title from a play session:
+photograph the linked-out directory before launch, photograph it again once the
+game has exited, and the difference is the folder this game writes to. That
+folder is then moved inside the prefix, the link is replaced with a real
+directory, and a symlink is left where the folder used to be so anything else on
+the machine that referred to it still resolves. The app says what it moved, in
+the detail view, because files moved on someone's behalf should never be a thing
+they discover by accident.
+
+It is deliberately conservative about what counts. Directories only — a game
+keeps its save in a folder of its own, while a document edited during a session
+is usually a file, and moving one into a Wine prefix would be a genuinely bad
+surprise. Only changes inside the session's own window, so a folder that merely
+sits there is never touched. Milliseconds rather than seconds, since a save
+written in the same second as the snapshot would otherwise look unchanged. And
+if the directory is too large to scan quickly (`SCAN_BUDGET`), nothing happens at
+all: guessing badly here costs somebody their saves, while doing nothing costs
+them a notice they were already seeing.
+
+The move itself stages every folder inside the prefix before the link is
+removed, so an interruption leaves the original arrangement intact, and falls
+back to a copy when the prefix and the home directory are on different
+filesystems, where `rename` refuses to go.
 
 Running `wineboot` takes seconds on a first launch, so `launch_game` now hops
 onto a blocking thread: a synchronous Tauri command runs on the main thread, and

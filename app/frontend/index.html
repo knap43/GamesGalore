@@ -2059,6 +2059,27 @@ function setupGameExitListener() {
   });
 }
 
+/* A PC game whose prefix linked Documents out to the home directory
+   has its save folder moved inside the prefix once the session that
+   revealed which folder it is has ended. Worth saying out loud: files
+   moved on someone's behalf, however correctly, should never be a
+   thing they discover by accident. */
+function setupPrefixMigrationListener() {
+  if (!TAURI) return;
+  TAURI.event.listen('prefix:saves-moved', (event) => {
+    const [id, migrated] = event.payload;
+    const game = GAMES.find(g => g.id === id);
+    if (!game || !migrated || !migrated.moved || migrated.moved.length === 0) return;
+
+    const folders = migrated.moved.join(' and ');
+    setSaveNote(
+      game,
+      `Moved ${folders} into this game's Wine prefix, so its saves are synced from now on. `
+      + 'The old location now points at the new one, so nothing else on this machine loses track of it.',
+    );
+  });
+}
+
 /* Fills in the emulator's data directory without anyone typing a path.
    Only ever fills a blank — a directory someone chose themselves is
    never second-guessed. */
@@ -2200,9 +2221,8 @@ async function checkPrefixCoverage(game) {
   const folders = status.unsynced.join(' and ');
   const el = document.getElementById('install-error');
   el.textContent = `${folders} in this game's Wine prefix link out to your home folder, `
-    + 'so anything saved there is not synced. Newer prefixes keep these inside themselves; '
-    + 'this one predates that. Move whatever this game saved there into the prefix — or '
-    + 'unlink the folders in winecfg under Desktop Integration — and it will be picked up.';
+    + 'so anything saved there is not synced yet. Play the game once and whatever it writes '
+    + 'there will be moved inside the prefix automatically — nothing else of yours is touched.';
   el.classList.remove('is-good');
   el.classList.add('is-info');
   el.style.display = 'block';
@@ -3847,6 +3867,7 @@ async function init() {
   renderGrid(); // shows the "Loading your library…" state immediately
   setupInstallStatusListener();
   setupGameExitListener();
+  setupPrefixMigrationListener();
   setupPlaytimeListener();
 
   await loadSettings();   // must resolve first — both loads need state.serverBase

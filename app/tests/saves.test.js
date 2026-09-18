@@ -359,9 +359,10 @@ async function boot(opts = {}) {
   const prefixNote = t.doc.getElementById('install-error');
   check('a prefix that links its save folders out says so', prefixNote.style.display, 'block');
   check('...naming the folders', prefixNote.textContent.includes('Documents and Saved Games'), true);
-  check('...and what to do about it', prefixNote.textContent.includes('winecfg'), true);
-  check('...and that newer prefixes do not have the problem',
-        prefixNote.textContent.includes('Newer prefixes keep these inside themselves'), true);
+  check('...and that it resolves itself on the next session',
+        prefixNote.textContent.includes('moved inside the prefix automatically'), true);
+  check('...without asking anyone to run winecfg',
+        prefixNote.textContent.includes('winecfg'), false);
   check('...in the neutral tone, not as a failure',
         [prefixNote.classList.contains('is-info'), prefixNote.classList.contains('is-good')], [true, false]);
 
@@ -375,6 +376,30 @@ async function boot(opts = {}) {
   await openGame(t.doc, '198X');
   await sleep(200);
   check('and a Switch game is never asked about prefixes at all',
+        t.doc.getElementById('install-error').style.display, 'none');
+
+  // === saves moved in after a session ==================================
+  // The migration runs in the backend once a session reveals which
+  // folder the game writes to; this is how the user hears about it.
+  t = await boot();
+  await openGame(t.doc, 'ULTRAKILL');
+  await sleep(200);
+  t.emit('prefix:saves-moved', ['PC/ULTRAKILL', { moved: ['Documents/ULTRAKILL'] }]);
+  await sleep(150);
+  const movedNote = t.doc.getElementById('install-error');
+  check('a migration is reported rather than done silently',
+        movedNote.style.display, 'block');
+  check('...naming what moved',
+        movedNote.textContent.includes('Documents/ULTRAKILL'), true);
+  check('...and that the old location still resolves',
+        movedNote.textContent.includes('points at the new one'), true);
+
+  t = await boot();
+  await openGame(t.doc, 'ULTRAKILL');
+  await sleep(200);
+  t.emit('prefix:saves-moved', ['PC/ULTRAKILL', { moved: [] }]);
+  await sleep(150);
+  check('a session that moved nothing says nothing',
         t.doc.getElementById('install-error').style.display, 'none');
 
   finish();
