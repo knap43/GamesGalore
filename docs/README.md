@@ -6,12 +6,23 @@ installing anything.
 
 ## Its relationship to the real frontend
 
-It started as a byte-identical copy of the app's own
-`games-galore/vault/tauri-backend/frontend/index.html` and is still
-substantially that file, so the UI, layout and navigation you see here are the
-real ones rather than a reimplementation. It is no longer identical, though:
-this copy carries a small set of demo-only changes, and the two files have to be
-re-synced by hand whenever the app's frontend changes.
+This file is generated from the app's own `app/frontend/index.html` by
+`app/tools/build-demo.js`, so the UI, layout and navigation you see here are
+the real ones rather than a reimplementation. Do not edit it by hand: edit the
+app's frontend, run the generator, and commit both.
+
+```sh
+cd app/tests
+npm run build:demo     # regenerate docs/index.html
+npm run check:demo     # fail if it is out of date (CI runs this)
+```
+
+It was kept in step by hand for months, which worked exactly as well as that
+ever does — the two drifted, a duplicated function and a mangled comment made
+it into the published copy, and every frontend change carried a silent
+obligation nobody could see. Each demo-only change is now a named patch in the
+generator that must match exactly once, so a patch the app has outgrown fails
+the build instead of producing a half-transformed page.
 
 What this copy adds on top of the app's version:
 

@@ -1,0 +1,107 @@
+# Runs every suite this project has, on push and on pull requests.
+#
+# Three independent jobs rather than one: the Rust job needs the GTK and
+# WebKit development headers (Tauri links against them even for a test
+# build that never opens a window) and takes minutes, while the other
+# two take seconds. Splitting them means a broken Python fixture doesn't
+# wait on a Rust toolchain to tell you so.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+# A second push to the same branch makes the first run's answer
+# irrelevant, so stop it rather than paying for both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Tauri backend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri's system dependencies. Kept in step with the list in the
+      # backend README's prerequisites section — if one changes, change
+      # both.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+  server:
+    name: Library server
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: server/requirements.txt
+
+      # Flask only. `nsz` is a runtime dependency of the conversion path,
+      # which the fixtures stub rather than exercise — installing it here
+      # would test PyPI, not this repository.
+      - name: Install Flask
+        run: pip install 'flask>=3.0'
+
+      - name: Test
+        run: python test_server.py
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app/tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/tests/package-lock.json
+
+      - name: Install jsdom
+        run: npm ci --no-audit --no-fund
+
+      # The demo is generated from the app's frontend; drift fails here
+      # rather than on a visitor a week later.
+      - name: Demo is in step with the app
+        run: npm run check:demo
+
+      - name: Test
+        run: npm test

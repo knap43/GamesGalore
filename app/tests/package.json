@@ -1,0 +1,13 @@
+{
+  "name": "games-galore-frontend-tests",
+  "private": true,
+  "description": "jsdom suites driving the real frontend against a mocked Tauri runtime",
+  "scripts": {
+    "test": "node run-all.js",
+    "build:demo": "node ../tools/build-demo.js",
+    "check:demo": "node ../tools/build-demo.js --check"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1"
+  }
+}
