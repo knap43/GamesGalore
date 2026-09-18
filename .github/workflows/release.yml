@@ -1,0 +1,72 @@
+# Builds installable packages when a version tag is pushed, and attaches
+# them to a GitHub release as a draft for you to check and publish.
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Nothing here runs on an ordinary push: a release is a deliberate act,
+# and building one on every commit would produce a pile of artifacts
+# nobody asked for.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # to create the release and upload to it
+
+jobs:
+  package:
+    name: Linux packages
+    # Deliberately not ubuntu-latest. A binary built against a newer
+    # glibc will not run on an older distribution, and the point of
+    # shipping an AppImage is that it runs on machines you don't
+    # control. Building on the oldest runner that still has the
+    # webview headers is what makes that true.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same list as the CI workflow's rust job; keep them in step.
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      # A tag that disagrees with the version in the config produces a
+      # release whose filenames contradict its name, which is the sort
+      # of thing nobody notices until someone reports a bug against the
+      # wrong version.
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          config_version=$(grep -o '"version": *"[^"]*"' app/src-tauri/tauri.conf.json | head -1 | cut -d'"' -f4)
+          tag_version=${GITHUB_REF_NAME#v}
+          if [ "$config_version" != "$tag_version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match tauri.conf.json version $config_version" >&2
+            exit 1
+          fi
+          echo "building $config_version"
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_name }}
+          releaseName: Games Galore ${{ github.ref_name }}
+          releaseDraft: true
+          # Both formats, overriding the config's appimage-only setting
+          # — that one exists so a local build on Arch doesn't reach for
+          # dpkg-deb, which this runner has.
+          args: --bundles deb,appimage

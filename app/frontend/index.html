@@ -3097,7 +3097,31 @@ document.addEventListener('keydown', (e) => {
   }
 
   // Escape / Backspace backs out of settings, then the detail view —
-  // but never while typing.
+  // but never while typing, or every Backspace in the search box would
+  // throw you out of the view you are searching in.
+  //
+  // A settings field is the exception. Escape there is conventional,
+  // and refusing it left a keyboard user focused in a text input with
+  // no way out of the modal at all except arrowing to a button first —
+  // a gamepad's B button never had that problem, which is exactly the
+  // kind of asymmetry this navigation exists to avoid. Blurred before
+  // closing so the field's own change handler commits what was typed
+  // rather than losing it. Backspace is deliberately not included:
+  // inside a text field it means delete.
+  if (e.key === 'Escape' && isSettingsOpen() && isSettingsField(active)) {
+    e.preventDefault();
+    // Committed explicitly rather than by relying on blur: a browser
+    // only fires change on blur for a field the user actually dirtied,
+    // which is a subtlety worth not depending on when the cost of
+    // getting it wrong is a silently discarded setting. Each field's
+    // own change handler trims and persists, so firing it twice with
+    // the same value is a no-op.
+    active.dispatchEvent(new Event('change', { bubbles: true }));
+    active.blur();
+    goBack();
+    return;
+  }
+
   if (e.key === 'Escape' || e.key === 'Backspace') {
     if (isTypingTarget(active)) return;
     if (isSettingsOpen() || isDetailOpen()) {
@@ -3132,6 +3156,11 @@ function moveWithSound(dir) {
 
 function isTypingTarget(el) {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+}
+
+function isSettingsField(el) {
+  const modal = document.querySelector('#settings-backdrop .modal');
+  return isTypingTarget(el) && !!modal && modal.contains(el);
 }
 
 function isDetailOpen() {
@@ -3172,6 +3201,22 @@ function updateSoundToggleUI() {
    first, since this needed to explain "any element," not just cards. */
 function focusNoScroll(el) {
   if (el) el.focus({ preventScroll: true });
+}
+
+/* Focusing inside the settings modal is the one place preventScroll is
+   not enough on its own. The modal is taller than its own max-height
+   and scrolls internally, so walking down the form with a keyboard or
+   a D-pad would move focus to fields below the fold and leave them
+   there — the caret in a text box nobody can see. Scrolled explicitly,
+   and only within the nearest scrollable ancestor, so the flicker
+   preventScroll exists to avoid stays avoided everywhere else.
+
+   `block: 'nearest'` does nothing when the element is already fully
+   visible, which is the common case. */
+function focusInModal(el) {
+  if (!el) return;
+  focusNoScroll(el);
+  if (el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
 }
 
 /* First of these ids that's actually on screen, or null. Used by the
@@ -3315,10 +3360,16 @@ function moveDirection(dir) {
   // with no defined direction to leave through at all.
   const settingsModal = document.querySelector('#settings-backdrop .modal');
   if (settingsModal && settingsModal.contains(active)) {
-    const focusables = Array.from(settingsModal.querySelectorAll('button, input'));
+    // Hidden and disabled controls are skipped rather than focused:
+    // landing on one strands the D-pad somewhere invisible with no
+    // direction out, which is the same failure the CTA row's
+    // nextCtaTarget exists to avoid.
+    const focusables = Array.from(settingsModal.querySelectorAll('button, input'))
+      .filter(el => el.offsetParent !== null && !el.disabled);
     const idx = focusables.indexOf(active);
-    if ((dir === 'down' || dir === 'right') && idx < focusables.length - 1) focusNoScroll(focusables[idx + 1]);
-    else if ((dir === 'up' || dir === 'left') && idx > 0) focusNoScroll(focusables[idx - 1]);
+    if (idx === -1) return;
+    if ((dir === 'down' || dir === 'right') && idx < focusables.length - 1) focusInModal(focusables[idx + 1]);
+    else if ((dir === 'up' || dir === 'left') && idx > 0) focusInModal(focusables[idx - 1]);
     return;
   }
 

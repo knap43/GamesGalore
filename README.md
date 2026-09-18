@@ -14,6 +14,12 @@ are listed at the bottom of each subproject's README.
 | `server/` | The Python library server that scans the drive and serves the catalog, the game files and the cloud saves. |
 | `docs/` | The GitHub Pages demo: the app's frontend, generated with its Tauri calls stubbed out. |
 
+### License
+
+MIT — see [LICENSE](LICENSE). Swap it for something else if that isn't what you
+want; it was chosen as the least surprising default for a tool like this, not
+because you asked for it specifically.
+
 ### Demo:
 https://knap43.github.io/GamesGalore/
 

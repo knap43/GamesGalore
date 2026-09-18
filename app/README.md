@@ -467,6 +467,28 @@ fail partway through. The result lands under
 are session-wide via `environment.d`, the built AppImage picks them up too — no
 separate flags needed versus `cargo tauri dev`.
 
+To build both formats anywhere that has `dpkg-deb` — Debian, Ubuntu, or CI —
+override that setting on the command line rather than editing it:
+
+```
+cargo tauri build --bundles deb,appimage
+```
+
+### Cutting a release
+
+Bump `version` in `tauri.conf.json` (and `Cargo.toml`, which should match), then:
+
+```
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` builds a `.deb` and an AppImage on Ubuntu 22.04
+— the oldest runner that still carries the webview headers, so the binaries run
+on distributions older than the newest — and attaches them to a **draft**
+release for you to check and publish. The workflow refuses to build if the tag
+and the configured version disagree.
+
 ---
 
 ## First-run configuration
@@ -594,11 +616,6 @@ you've confirmed that's the only dialog capability in use.
   them and nothing records playtime. Hooking into `launch_game` to time a
   session is a real feature, not a wiring gap; it's a harmless no-op until
   someone wants it.
-- **Settings keyboard navigation.** The emulator inputs and Check buttons are
-  standard Tab-navigable elements but aren't wired into the custom
-  arrow-key/gamepad navigation chain the rest of the app uses — a lot of added
-  complexity for a screen you configure once. Worth reconsidering if that
-  assumption turns out wrong.
 
 ## Verification status
 
@@ -626,6 +643,13 @@ passes it to `launch_game`, drops an override that merely restates the default,
 disappears on uninstall, keeps the arrow-key chain free of dead steps whether
 or not it is showing, and leaves Play working when the candidate lookup fails
 outright.
+
+Settings has its own suite: that arrowing through the modal reaches every
+control including the ones added since the navigation was written, that it never
+lands on something hidden or disabled, that it stops at both ends rather than
+escaping the modal, that a text field can be left in any direction — the thing a
+D-pad could not do before — and that Escape from a field commits what was typed
+before closing.
 
 Startup is covered the same way, against a deliberately slow `fetch_library`:
 that the cached shelf is drawn before the fetch resolves, that the cache is
