@@ -7,6 +7,10 @@ target/
 # is what keeps a build reproducible.
 **/gen/schemas/
 
+# Node (the frontend suites' jsdom install; the frontend itself has no
+# dependencies and no build step)
+node_modules
+
 # Python
 .venv/
 venv/
