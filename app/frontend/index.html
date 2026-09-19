@@ -949,6 +949,33 @@
   }
   /* Neither a failure nor a success: something about this game's setup
      that is worth knowing before you rely on it. */
+  /* Clickable, because a tag nobody can do anything with is
+     decoration. Each one filters the library down to games carrying
+     it, which is the only question a tag answers. */
+  .tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 14px;
+  }
+  .tag-pill {
+    background: var(--bg-card);
+    border: 1px solid var(--border-hair);
+    border-radius: var(--radius-pill);
+    color: var(--text-faint);
+    font-family: var(--font-body);
+    font-size: 11.5px;
+    padding: 5px 11px;
+    cursor: pointer;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+  .tag-pill:hover,
+  .tag-pill:focus-visible {
+    outline: none;
+    color: var(--text-primary);
+    border-color: var(--accent-violet);
+  }
+
   .description-row {
     display: flex;
     align-items: center;
@@ -1155,6 +1182,8 @@
     </nav>
 
     <nav class="nav-group" id="genre-nav"></nav>
+
+    <nav class="nav-group" id="tag-nav"></nav>
 
     <nav class="nav-group" id="status-nav">
       <div class="nav-label">Status</div>
@@ -1397,6 +1426,7 @@
                   style="display:none">Fetch details</button>
         </div>
         <p class="description" id="description"></p>
+        <div class="tag-row" id="tag-row"></div>
       </div>
     </div>
 
@@ -2332,6 +2362,9 @@ let state = {
   platforms: new Set(),   // empty = every platform
   genres: new Set(),      // empty = every genre; only ever populated for a
                           // library whose games carry a game.json
+  tags: new Set(),        // stacked, and read as "and": two tags means games
+                          // carrying both, since a game has many tags and
+                          // narrowing is the only reason to pick a second
   installedOnly: false,
   query: '',
   rawgKey: '',
@@ -2585,6 +2618,25 @@ function renderGenreNav() {
   `).join('');
 }
 
+/* Only the tags currently filtering, never the whole vocabulary: a
+   library of five hundred games carries thousands of tags, and a
+   sidebar listing them would be a wall rather than a control. They are
+   added by clicking one in a game's detail view and removed by
+   clicking here, which is the whole lifecycle. */
+function renderTagNav() {
+  const nav = document.getElementById('tag-nav');
+  if (state.tags.size === 0) {
+    nav.innerHTML = '';
+    return;
+  }
+  nav.innerHTML = '<div class="nav-label">Tags</div>' + [...state.tags].sort().map(tag => `
+    <div class="nav-item active" data-type="tag" data-value="${tag}" tabindex="0" role="button">
+      <span class="nav-item-inner">${tag}</span>
+      <span class="count">×</span>
+    </div>
+  `).join('');
+}
+
 /* Both nav renderers take the highlight from state rather than leaving
    it on the DOM. They rebuild their own innerHTML, and renderStatusNav
    runs on every install-status change — so a class toggled onto the
@@ -2679,13 +2731,29 @@ function renderSidebarFooter() {
 /* ---------------------------------------------------------------
  * RENDER: GRID
  * --------------------------------------------------------------- */
+/* Search covers the title, the genre and the tags rather than the
+   title alone. Typing "roguelike" or "RPG" and getting nothing back
+   from a library that has both, because neither is in any game's
+   name, is the sort of thing that teaches people the search box is
+   unreliable. */
+function matchesSearch(game, query) {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = [game.title, game.genre || '', ...(game.tags || [])]
+    .join(' ')
+    .toLowerCase();
+  return haystack.includes(needle);
+}
+
 function getFilteredSortedGames() {
   let list = GAMES.filter(g => {
     const matchesPlatform = state.platforms.size === 0 || state.platforms.has(g.platform);
     const matchesGenre = state.genres.size === 0 || state.genres.has(g.genre);
+    const matchesTags = state.tags.size === 0
+      || [...state.tags].every(tag => (g.tags || []).includes(tag));
     const matchesInstalled = !state.installedOnly || g.installed;
-    const matchesQuery = g.title.toLowerCase().includes(state.query.toLowerCase());
-    return matchesPlatform && matchesGenre && matchesInstalled && matchesQuery;
+    const matchesQuery = matchesSearch(g, state.query);
+    return matchesPlatform && matchesGenre && matchesTags && matchesInstalled && matchesQuery;
   });
 
   if (state.sort === 'alpha') {
@@ -2906,6 +2974,9 @@ function detailMetaHTML(game) {
   // facts about it; playtime is a fact about this machine, so it goes
   // last rather than in place of anything.
   if (game.release_year) segs.push(`<span>${game.release_year}</span>`);
+  if (game.players > 0) {
+    segs.push(`<span>${game.players === 1 ? '1 player' : `up to ${game.players} players`}</span>`);
+  }
   if (typeof game.hours === 'number') segs.push(`<span>${game.hours}h played</span>`);
   return segs.join('<span class="dot-sep"></span>');
 }
@@ -2914,6 +2985,17 @@ function detailMetaHTML(game) {
    fill in — one with no description or no cover — because for a game
    that already has both, fetching would either change nothing or
    overwrite something somebody wrote by hand. */
+/* A game's tags, as buttons. Clicking one goes back to the library
+   filtered by it — the tag's only useful question is "what else is
+   like this?", and that is the answer. */
+function renderTagRow(game) {
+  const row = document.getElementById('tag-row');
+  const tags = game.tags || [];
+  row.innerHTML = tags.map(tag =>
+    `<button class="tag-pill" type="button" data-tag="${tag}">${tag}</button>`
+  ).join('');
+}
+
 function renderFetchButton(game) {
   const button = document.getElementById('fetch-metadata');
   const worthFetching = !!TAURI && (!game.description || !game.cover);
@@ -3061,6 +3143,7 @@ function openGameDetail(id) {
 
   renderCtaRow(game);
   renderFetchButton(game);
+  renderTagRow(game);
   renderThumbStrip(game);
   renderViewerMedia(game);
   refreshLaunchCandidates(game); // async; fills in the picker once it resolves
@@ -3254,6 +3337,9 @@ document.addEventListener('click', (e) => {
     } else if (type === 'genre') {
       if (state.genres.has(value)) state.genres.delete(value);
       else state.genres.add(value);
+    } else if (type === 'tag') {
+      state.tags.delete(value); // the only reason to click one here
+      renderTagNav();
     } else if (type === 'status' && value === 'installed') {
       state.installedOnly = navItem.classList.contains('active');
       installedFilterTouched = true;
@@ -3321,6 +3407,15 @@ document.addEventListener('click', (e) => {
   const option = e.target.closest('.launch-option');
   if (option) {
     commitLaunchChoice(option.dataset.launchName);
+    return;
+  }
+
+  const tagPill = e.target.closest('.tag-pill');
+  if (tagPill) {
+    state.tags.add(tagPill.dataset.tag);
+    closeGameDetail();     // the answer is back in the library, not here
+    renderTagNav();
+    renderGrid(true);
     return;
   }
 
@@ -4088,6 +4183,7 @@ function renderShell() {
   renderSortPills();
   renderPlatformNav();
   renderGenreNav();
+  renderTagNav();
   renderStatusNav();
   renderSidebarFooter();
   renderServerNotice();

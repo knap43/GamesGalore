@@ -12,9 +12,12 @@ const game = (id, title, platform, extra = {}) => ({
 });
 
 const WITH_GENRES = [
-  game('PC/Hollow Meridian', 'Hollow Meridian', 'PC', { genre: 'RPG', tags: ['moody'], players: 1 }),
-  game('PC/Voltgrid Arena', 'Voltgrid Arena', 'PC', { genre: 'Sports', players: 4 }),
-  game('Switch/Bramblewood', 'Bramblewood', 'Switch', { genre: 'RPG' }),
+  game('PC/Hollow Meridian', 'Hollow Meridian', 'PC',
+       { genre: 'RPG', tags: ['Atmospheric', 'Singleplayer'], players: 1 }),
+  game('PC/Voltgrid Arena', 'Voltgrid Arena', 'PC',
+       { genre: 'Sports', tags: ['Multiplayer'], players: 4 }),
+  game('Switch/Bramblewood', 'Bramblewood', 'Switch',
+       { genre: 'RPG', tags: ['Atmospheric'] }),
   game('PS1/Nebula Drift', 'Nebula Drift', 'PS1'), // no sidecar at all
 ];
 
@@ -78,6 +81,72 @@ const titles = doc =>
           t.doc.getElementById('genre-nav').innerHTML, '');
     check('...and every game is still shown', titles(t.doc).length, 4);
     check('no uncaught errors without metadata', t.errors, []);
+  }
+
+  // === tags =============================================================
+  // Fetched, stored and carried all the way to the frontend, where
+  // until now nothing looked at them at all.
+  {
+    const t = await boot(WITH_GENRES);
+    await openGame(t.doc, 'Hollow Meridian');
+
+    const pills = [...t.doc.querySelectorAll('.tag-pill')].map(el => el.textContent);
+    check('a game shows its tags', pills, ['Atmospheric', 'Singleplayer']);
+    check('...and its player count',
+          t.doc.getElementById('detail-meta').textContent.includes('1 player'), true);
+
+    // Clicking one answers the only question a tag asks.
+    t.doc.querySelector('.tag-pill[data-tag="Atmospheric"]').click();
+    await sleep(200);
+    check('clicking a tag returns to the library',
+          t.doc.getElementById('view-library').style.display !== 'none', true);
+    check('...filtered to games carrying it',
+          titles(t.doc), ['Bramblewood', 'Hollow Meridian']);
+    check('...and the sidebar shows the filter',
+          [...t.doc.querySelectorAll('#tag-nav .nav-item')].map(e => e.dataset.value),
+          ['Atmospheric']);
+
+    // Stacked tags narrow rather than widen: a game must carry both.
+    await openGame(t.doc, 'Hollow Meridian');
+    t.doc.querySelector('.tag-pill[data-tag="Singleplayer"]').click();
+    await sleep(200);
+    check('a second tag narrows the result', titles(t.doc), ['Hollow Meridian']);
+
+    t.doc.querySelector('#tag-nav .nav-item[data-value="Singleplayer"]').click();
+    await sleep(200);
+    check('removing one widens it again', titles(t.doc), ['Bramblewood', 'Hollow Meridian']);
+
+    check('a game with no tags shows no pills', (await (async () => {
+      t.doc.querySelector('#tag-nav .nav-item[data-value="Atmospheric"]').click();
+      await sleep(150);
+      await openGame(t.doc, 'Nebula Drift');
+      return [...t.doc.querySelectorAll('.tag-pill')].length;
+    })()), 0);
+    check('...and no player count either',
+          t.doc.getElementById('detail-meta').textContent.includes('player'), false);
+    check('no uncaught errors around tags', t.errors, []);
+  }
+
+  // === search reaches past the title ====================================
+  {
+    const t = await boot(WITH_GENRES);
+    const search = (term) => {
+      const box = t.doc.getElementById('search');
+      box.value = term;
+      box.dispatchEvent(new t.win.Event('input'));
+      return sleep(150);
+    };
+
+    await search('roguelike');
+    check('a term nothing carries finds nothing', titles(t.doc), []);
+    await search('atmospheric');
+    check('searching a tag finds the games carrying it',
+          titles(t.doc), ['Bramblewood', 'Hollow Meridian']);
+    await search('sports');
+    check('searching a genre works too', titles(t.doc), ['Voltgrid Arena']);
+    await search('nebula');
+    check('and a title still does', titles(t.doc), ['Nebula Drift']);
+    check('no uncaught errors around search', t.errors, []);
   }
 
   finish();
