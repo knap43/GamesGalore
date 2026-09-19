@@ -965,7 +965,7 @@ pub fn encode_path_segments(id: &str) -> String {
 /// output) reaches this error instead of getting silently dropped in
 /// favor of a bare status code, which is what made every install
 /// failure look identical and undiagnosable before this.
-fn extract_error_detail(html_body: &str) -> String {
+pub fn extract_error_detail(html_body: &str) -> String {
     if let Some(start) = html_body.find("<p>") {
         if let Some(end) = html_body[start..].find("</p>") {
             return html_body[start + 3..start + end].trim().to_string();

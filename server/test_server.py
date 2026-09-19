@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -246,6 +247,189 @@ def main() -> int:
     # managed to create anything of its own along the way.
     check("nothing escaped SAVE_ROOT",
           sorted(d.name for d in srv.SAVE_ROOT.iterdir()), ["PC", "Switch"])
+
+    print("\n--- metadata fetcher ---")
+    # Driven against recorded responses: the tests stay offline, fast,
+    # and out of anybody's rate limit.
+    import metadata as md
+
+    class FakeResponse:
+        def __init__(self, payload=None, blob=None, status=200):
+            self._payload = payload
+            self._blob = blob or b""
+            self.status_code = status
+
+        def json(self):
+            return self._payload
+
+        def iter_content(self, chunk_size=8192):
+            yield self._blob
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise RuntimeError(f"HTTP {self.status_code}")
+
+    class FakeSession:
+        """Answers the four RAWG endpoints and any image URL."""
+
+        def __init__(self, status=200):
+            self.calls = []
+            self.status = status
+
+        def get(self, url, params=None, timeout=None, stream=False):
+            self.calls.append(url)
+            if self.status != 200:
+                return FakeResponse(status=self.status)
+            if url.endswith("/games") and (params or {}).get("search"):
+                return FakeResponse({"results": [
+                    {"id": 7, "name": "Hollow Meridian II", "released": "2024-01-01",
+                     "background_image": "https://img/other.jpg"},
+                    {"id": 1, "name": "Hollow Meridian", "released": "2021-06-04",
+                     "background_image": "https://img/cover.jpg"},
+                ]})
+            if re.search(r"/games/\d+$", url):
+                return FakeResponse({
+                    "description_raw": "A long dark corridor of a game.",
+                    "released": "2021-06-04",
+                    "genres": [{"name": "RPG"}, {"name": "Indie"}],
+                    "tags": [{"name": "Singleplayer"}, {"name": "Atmospheric"}],
+                })
+            if url.endswith("/screenshots"):
+                return FakeResponse({"results": [
+                    {"image": "https://img/s1.jpg"}, {"image": "https://img/s2.jpg"},
+                ]})
+            if url.endswith("/movies"):
+                return FakeResponse({"results": [
+                    {"data": {"max": "https://img/trailer.mp4"}},
+                ]})
+            return FakeResponse(blob=b"BINARY")  # an image or a video
+
+    # The search picks the exact name, not merely the first result.
+    session = FakeSession()
+    rawg = md.RawgClient("test-key", session)
+    check("the closest name wins over the first result",
+          rawg.search("Hollow Meridian")["id"], 1)
+    check("punctuation and case don't decide it",
+          md.best_match("hollow-meridian!", [{"name": "Hollow Meridian", "id": 1}])["id"], 1)
+    check("nothing found is not a match", md.best_match("x", []), None)
+
+    fetch_dir = tmp / "fetch" / "Hollow Meridian"
+    fetch_dir.mkdir(parents=True)
+    result = md.fill_game_folder(fetch_dir, "Hollow Meridian", rawg, max_screenshots=2)
+
+    check("it matched the right game", result.matched, "Hollow Meridian")
+    check("...and wrote the whole set", sorted(result.wrote),
+          ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
+           "screenshot-02.jpg", "trailer.mp4"])
+    check("the README is the shape the scanner parses",
+          (fetch_dir / "README.md").read_text().splitlines()[0],
+          "# Hollow Meridian (2021)")
+    check("...with the description under it",
+          "A long dark corridor" in (fetch_dir / "README.md").read_text(), True)
+    check("the sidecar carries the genre and tags",
+          json.loads((fetch_dir / "game.json").read_text()),
+          {"genre": "RPG", "tags": ["Singleplayer", "Atmospheric"], "release_year": 2021})
+    check("no .part files are left behind",
+          list(fetch_dir.glob("*.part")), [])
+
+    # And the scanner reads back exactly what was written.
+    fetched = md_scan = None
+    from library import _read_game_folder
+    fetched = _read_game_folder(fetch_dir, "PC")
+    check("the scanner sees the year", fetched.release_year, 2021)
+    check("...the description", fetched.description.startswith("A long dark"), True)
+    check("...the cover", fetched.cover, "cover.jpg")
+    check("...every screenshot", len(fetched.screenshots), 3)
+    check("...the trailer", fetched.trailer, "trailer.mp4")
+    check("...and the genre from the sidecar", fetched.genre, "RPG")
+
+    # A second run leaves a curated folder alone.
+    again = md.fill_game_folder(fetch_dir, "Hollow Meridian", rawg, max_screenshots=2)
+    check("a second pass writes nothing", again.wrote, [])
+    check("...and says what it skipped", sorted(again.skipped),
+          ["README.md", "cover.jpg", "game.json", "screenshots", "trailer.mp4"])
+
+    (fetch_dir / "README.md").write_text("# Mine (1999)\n\nHand-written.\n")
+    md.fill_game_folder(fetch_dir, "Hollow Meridian", rawg, max_screenshots=2)
+    check("a hand-written README is never overwritten",
+          (fetch_dir / "README.md").read_text().startswith("# Mine"), True)
+    forced = md.fill_game_folder(fetch_dir, "Hollow Meridian", rawg,
+                                 overwrite=True, max_screenshots=2)
+    check("...unless overwrite says so",
+          (fetch_dir / "README.md").read_text().startswith("# Hollow Meridian"), True)
+    check("...which rewrites everything", len(forced.wrote), 6)
+
+    # Failures worth naming rather than a stack trace.
+    for status, expected in ((401, "rejected the API key"), (429, "rate limit")):
+        try:
+            md.RawgClient("test-key", FakeSession(status=status)).search("x")
+            check(f"a {status} is reported", "no error raised", expected)
+        except md.MetadataError as e:
+            check(f"a {status} is reported plainly", expected in str(e), True)
+    try:
+        md.RawgClient("", FakeSession())
+        check("a missing key is refused", "no error raised", "an error")
+    except md.MetadataError as e:
+        check("a missing key is refused before any request",
+              "no RAWG API key" in str(e), True)
+
+    print("\n--- metadata endpoints ---")
+    # The routes, with the network stubbed the same way.
+    srv.requests = type("FakeRequests", (), {"Session": lambda self=None: FakeSession()})()
+    srv.RAWG_API_KEY = "test-key"
+
+    bare = root / "PS1" / "Bare Title"
+    bare.mkdir()
+    (bare / "bare.cue").write_bytes(b"CUE")
+    srv._reload_catalog()
+
+    r = client.post("/metadata/PS1/Bare Title")
+    check("one game can be filled in on request", r.status_code, 200)
+    check("...reporting what it wrote", sorted(r.get_json()["wrote"]),
+          ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
+           "screenshot-02.jpg", "trailer.mp4"])
+    check("...and the catalog reflects it immediately",
+          srv._catalog["PS1/Bare Title"].cover, "cover.jpg")
+    check("an unknown game is refused",
+          client.post("/metadata/PS1/Nothing Here").status_code, 404)
+
+    # The library-wide pass only touches what is incomplete.
+    everything = client.post("/metadata")
+    check("a library-wide pass is accepted", everything.status_code, 200)
+    filled = {r["title"] for r in everything.get_json()["results"]}
+    check("...and skips a game that already has both", "Bare Title" in filled, False)
+
+    srv.SAVE_TOKEN = "s3cret-token"
+    check("fetching is behind the write token",
+          client.post("/metadata/PS1/Bare Title").status_code, 401)
+    check("...and passes with it",
+          client.post("/metadata/PS1/Bare Title",
+                      headers={"Authorization": "Bearer s3cret-token"}).status_code, 200)
+    srv.SAVE_TOKEN = ""
+
+    srv.RAWG_API_KEY = ""
+    check("no key configured is a clear 502, not a crash",
+          client.post("/metadata/PS1/Bare Title").status_code, 502)
+    check("...but a key sent with the request is enough on its own",
+          client.post("/metadata/PS1/Bare Title?overwrite=1",
+                      headers={"X-RAWG-Key": "from-the-app"}).status_code, 200)
+    srv.RAWG_API_KEY = "test-key"
+
+    # Working through a list, the caller asks for the rescan to be
+    # skipped: one per game would cost more than the fetching does.
+    scans_before = scans["count"] if "scans" in dir() else None
+    real_reload = srv._reload_catalog
+    reloads = {"count": 0}
+    srv._reload_catalog = lambda: (reloads.__setitem__("count", reloads["count"] + 1),
+                                   real_reload())[1]
+    client.post("/metadata/PS1/Bare Title?overwrite=1")
+    check("a single fetch rescans afterwards", reloads["count"], 1)
+    client.post("/metadata/PS1/Bare Title?overwrite=1&rescan=0")
+    check("...and a bulk one does not", reloads["count"], 1)
+    srv._reload_catalog = real_reload
+
+    shutil.rmtree(bare)
+    srv._reload_catalog()
 
     print("\n--- catalog caching ---")
     # /library used to rescan the whole tree on every call. It now

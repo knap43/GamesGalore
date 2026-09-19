@@ -93,6 +93,29 @@ server's address — `http://<that machine>:8420` — and an install directory.
 Nothing works until those two are set. Emulator commands for each platform have
 sensible defaults and are worth checking if you use Flatpaks.
 
+#### Filling in covers and descriptions
+
+A game's folder can carry a `README.md`, a cover, screenshots, a trailer and a
+`game.json` of genre and tags, all of which the app displays — and writing those
+by hand for a large library is nobody's idea of an evening. They can be fetched
+from [RAWG](https://rawg.io/apidocs) instead:
+
+- **In the app.** Settings → *Game metadata*: paste a free RAWG key and press
+  **Fetch metadata**. It works through every game missing a description or a
+  cover, one at a time, saying which one it is on. A single game can also be
+  filled in from its own page, with **Fetch details**.
+- **From the command line**, with no app running:
+  `RAWG_API_KEY=... .venv/bin/python metadata.py` in `server/`.
+
+The key is sent to the library server with each request, so the server does not
+need one of its own — though `RAWG_API_KEY` in its environment works too, and is
+what the command line uses.
+
+**Nothing already in a game's folder is overwritten.** Every existing file is
+skipped, so a run after adding a few titles only touches the new ones, and a
+folder you curated by hand stays as you left it. `--overwrite` (or `?overwrite=1`)
+is there for data that is wrong rather than missing.
+
 `app/README.md` and `server/README.md` go into all of this properly, including
 NVIDIA notes, the emulator configuration and the known gaps.
 

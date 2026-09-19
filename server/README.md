@@ -179,6 +179,58 @@ Everything that can fail cleanly — an unknown title, a missing file, a
 conversion — is resolved before the first byte goes out, while `abort()` can
 still produce an error the client can read.
 
+## Fetching metadata
+
+Writing a README, finding a cover and pulling a few screenshots is pleasant for
+one game and unbearable for five hundred, so `metadata.py` does it from
+[RAWG](https://rawg.io/apidocs). A free key is instant; put it in the
+environment rather than in the file:
+
+```sh
+RAWG_API_KEY=... .venv/bin/python metadata.py                 # everything incomplete
+RAWG_API_KEY=... .venv/bin/python metadata.py "Hollow Meridian"
+RAWG_API_KEY=... .venv/bin/python metadata.py --overwrite      # replace what's there
+```
+
+It writes exactly what the scanner reads — `README.md` with the title, year and
+description, `cover.jpg`, `screenshot-01.jpg` onward, `trailer.mp4`, and a
+`game.json` of genre and tags — so a fetched folder and a hand-made one are the
+same thing.
+
+**Nothing is overwritten unless you ask.** Every file that already exists is
+skipped and reported as skipped, which makes a second run cheap and makes a
+curated folder safe. `--overwrite` is the escape hatch for a folder whose data is
+wrong rather than missing.
+
+The search picks the closest name rather than the first result: an exact match on
+the normalised name wins, then a prefix match, and only then position. Searching
+for "DOOM" returns a dozen DOOMs, and the first is not reliably the one called
+DOOM.
+
+Downloads land in a `.part` file and are renamed on success, so an interrupted
+run leaves nothing that a later run would mistake for finished.
+
+The same thing is available over HTTP, which is what the client's **Fetch
+details** button calls:
+
+```
+POST /metadata/<platform>/<title>     one game
+POST /metadata                        every game missing a description or cover
+```
+
+Both take `?overwrite=1`, and both are behind `SAVE_TOKEN` when one is set, since
+they write into the library. The single-game route also takes `?rescan=0`, which
+the app passes while working through a list — one full library rescan per game
+would cost far more than the fetching does, and the next `/library` call picks
+the changes up anyway, because writing into a game's folder moves the mtime the
+catalog's signature watches.
+
+An `X-RAWG-Key` header overrides `RAWG_API_KEY` for that request, which is how
+the app supplies a key without one being written into this machine's config. It
+is a header rather than a query parameter so it stays out of access logs. A bad key or a rate limit stops a library-wide run rather
+than making four hundred more requests that cannot work; one game failing for its
+own reasons is recorded and the run continues.
+
 ## Per-game metadata
 
 Everything the catalog knows is otherwise inferred: the title from the folder

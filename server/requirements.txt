@@ -1,2 +1,4 @@
 flask>=3.0
 nsz
+# The metadata fetcher's HTTP client.
+requests>=2.31

@@ -29,28 +29,32 @@ import io
 import json
 import shutil
 import subprocess
-import time
 import tarfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import requests
 from flask import Flask, Response, abort, jsonify, request, send_file, url_for
 
 from config import (
     CACHE_DIR,
     CACHE_MAX_BYTES,
     CATALOG_TTL_SECONDS,
+    METADATA_MAX_SCREENSHOTS,
     HOST,
     LEGACY_CACHE_DIR,
     LEGACY_SAVE_ROOT,
     LIBRARY_ROOT,
     PORT,
     SAVE_ROOT,
+    RAWG_API_KEY,
     SAVE_TOKEN,
     SAVE_VERSIONS_KEPT,
 )
 from library import scan_library
+from metadata import MetadataError, RawgClient, fill_game_folder
 
 app = Flask(__name__)
 
@@ -396,6 +400,90 @@ def rescan_route():
     return jsonify({"games": len(_catalog)})
 
 
+@app.route("/metadata/<platform>/<title>", methods=["POST"])
+def metadata_route(platform: str, title: str):
+    """
+    Fills in one game's folder from RAWG: description, cover art,
+    screenshots, a trailer and a game.json of genre and tags.
+
+    `?overwrite=1` replaces what is already there. Without it, every
+    file that exists is left alone — the point being that a library
+    curated by hand is not something to overwrite on someone's behalf.
+    """
+    _check_write_auth()
+
+    game_id = f"{platform}/{title}"
+    _ensure_catalog()
+    if game_id not in _catalog:
+        abort(404, "unknown game id")
+
+    overwrite = request.args.get("overwrite", "").lower() in {"1", "true", "yes"}
+    try:
+        result = _fetch_metadata_for(game_id, overwrite=overwrite)
+    except MetadataError as e:
+        abort(502, str(e))
+
+    # The folder changed, so the cached catalog is behind — unless the
+    # caller says it is working through a list, in which case rescanning
+    # the whole library once per game would cost far more than the
+    # fetches do. The client's next /library call picks the changes up
+    # anyway: writing into a game's folder moves its mtime, which is
+    # exactly what the catalog's signature check watches.
+    if request.args.get("rescan", "").lower() not in {"0", "false", "no"}:
+        _reload_catalog()
+    return jsonify(result.to_dict())
+
+
+@app.route("/metadata", methods=["POST"])
+def metadata_all_route():
+    """
+    The same for every game that is missing something, in one pass.
+
+    Games that already have a description and a cover are not looked up
+    at all, so a second run over a mostly-complete library costs almost
+    nothing. A failure on one game is recorded and the run continues; a
+    failure that will affect every game — a bad key, a rate limit —
+    stops it, since there is no sense in making four hundred more
+    requests that cannot work.
+    """
+    _check_write_auth()
+    overwrite = request.args.get("overwrite", "").lower() in {"1", "true", "yes"}
+
+    _ensure_catalog()
+    results = []
+    for game_id, game in sorted(_catalog.items()):
+        if not overwrite and game.description and game.cover:
+            continue
+        try:
+            results.append(_fetch_metadata_for(game_id, overwrite=overwrite).to_dict())
+        except MetadataError as e:
+            _reload_catalog()
+            return jsonify({"results": results, "stopped": str(e)}), 502
+        except Exception as e:  # noqa: BLE001 - one bad game is not the run
+            results.append({"title": game.title, "error": str(e)})
+
+    _reload_catalog()
+    return jsonify({"results": results, "stopped": None})
+
+
+def _fetch_metadata_for(game_id: str, *, overwrite: bool):
+    game = _catalog[game_id]
+    # A key sent with the request wins over the configured one: it is
+    # the more recent statement of intent, and it means the whole thing
+    # can be set up from the app without editing a file on this
+    # machine. Taken from a header rather than the query string so it
+    # stays out of access logs and browser history.
+    key = request.headers.get("X-RAWG-Key", "").strip() or RAWG_API_KEY
+    client = RawgClient(key, requests.Session())
+    return fill_game_folder(
+        _resolve_game_dir(game_id),
+        game.title,
+        client,
+        overwrite=overwrite,
+        max_screenshots=METADATA_MAX_SCREENSHOTS,
+    )
+
+
 @app.route("/status")
 def status_route():
     nsz_path = shutil.which("nsz")
@@ -446,15 +534,17 @@ def _read_versions(directory: Path) -> list:
     return versions
 
 
-def _check_save_auth() -> None:
+def _check_write_auth() -> None:
     """
-    Guards the save endpoints when a token is configured.
+    Guards every endpoint that writes something, when a token is
+    configured.
 
-    These are the only routes here that write anything, and the only
-    ones carrying data that is personal rather than merely a copy of
-    what is already on the drive — so the guard covers reads as well as
-    writes. The catalog and the game files stay open: they are the
-    browsing surface this whole tool exists to expose on a LAN.
+    That is the saves — the only data here that is personal rather than
+    a copy of what is already on the drive, which is why the guard
+    covers reading them as well — and the metadata fetcher, which
+    writes into the library itself. The catalog, the media and the game
+    files stay open: they are the browsing surface this whole tool
+    exists to expose on a LAN.
 
     Compared in constant time, which costs nothing and removes the
     question of whether a timing difference could be measured across a
@@ -474,7 +564,7 @@ def save_list_route(platform: str, title: str):
     compares the newest entry against what's on its own disk to decide
     whether it is behind, ahead, or in conflict.
     """
-    _check_save_auth()
+    _check_write_auth()
     return jsonify({"versions": _read_versions(_save_dir(platform, title))})
 
 
@@ -491,7 +581,7 @@ def save_upload_route(platform: str, title: str):
     recorded for display and conflict detection, never trusted for
     anything that touches the filesystem.
     """
-    _check_save_auth()
+    _check_write_auth()
     blob = request.get_data()
     if not blob:
         abort(400, "empty upload")
@@ -533,7 +623,7 @@ def save_upload_route(platform: str, title: str):
 
 @app.route("/saves/<platform>/<title>/<version>")
 def save_download_route(platform: str, title: str, version: str):
-    _check_save_auth()
+    _check_write_auth()
     directory = _save_dir(platform, title)
     path = _safe_join(directory, f"{_safe_segment(version)}.tar.gz")
     return send_file(path, conditional=True, as_attachment=True)

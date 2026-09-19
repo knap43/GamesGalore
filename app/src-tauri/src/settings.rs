@@ -66,6 +66,11 @@ pub struct Settings {
     /// written before the sort control came back still loads.
     #[serde(default = "default_sort")]
     pub sort: String,
+    /// RAWG key for the metadata fetcher, sent with each request so the
+    /// server can use it without one being written into its config.
+    /// `default` so a settings.json written before this still loads.
+    #[serde(default)]
+    pub rawg_key: String,
 }
 
 /// Everything cloud saves need that can't be derived.
@@ -194,6 +199,7 @@ impl Default for Settings {
             prefix_root: String::new(),
             save_sync: SaveSyncConfig::default(),
             sort: default_sort(),
+            rawg_key: String::new(),
         }
     }
 }
