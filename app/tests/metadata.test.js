@@ -149,5 +149,35 @@ const titles = doc =>
     check('no uncaught errors around search', t.errors, []);
   }
 
+  // === an empty section costs nothing ==================================
+  // The sidebar is a flex column with a gap between its groups, so an
+  // empty group still leaves a hole — which is exactly what a library
+  // with no genres showed between Platforms and Status.
+  {
+    const plain = WITH_GENRES.map(g => ({ ...g, genre: null, tags: [] }));
+    const t = await boot(plain);
+    check('a library with no genres hides the section entirely',
+          t.doc.getElementById('genre-nav').style.display, 'none');
+    check('...and the tag section too',
+          t.doc.getElementById('tag-nav').style.display, 'none');
+  }
+
+  {
+    const t = await boot(WITH_GENRES);
+    check('a library with genres shows the section',
+          t.doc.getElementById('genre-nav').style.display, '');
+    check('...while the tag section stays hidden until a tag is picked',
+          t.doc.getElementById('tag-nav').style.display, 'none');
+
+    await openGame(t.doc, 'Hollow Meridian');
+    t.doc.querySelector('.tag-pill[data-tag="Atmospheric"]').click();
+    await sleep(200);
+    check('...and appears when one is', t.doc.getElementById('tag-nav').style.display, '');
+
+    t.doc.querySelector('#tag-nav .nav-item').click();
+    await sleep(200);
+    check('...then goes away again', t.doc.getElementById('tag-nav').style.display, 'none');
+  }
+
   finish();
 })();
