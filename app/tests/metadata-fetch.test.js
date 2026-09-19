@@ -38,6 +38,7 @@ async function boot({ result, fails = false, delay = 0 } = {}) {
     calls.push([cmd, args]);
     switch (cmd) {
       case 'get_settings': return settings;
+      case 'save_settings': Object.assign(settings, args.settings); return null;
       case 'get_cached_library': return [];
       // The catalog changes underneath, exactly as it does when the
       // server writes the files and the client refetches.
@@ -57,11 +58,16 @@ async function boot({ result, fails = false, delay = 0 } = {}) {
     }
   };
   const t = await bootApp({ invoke, listen: rt.listen });
-  return { ...t, calls };
+  return { ...t, calls, settings };
 }
 
 const button = doc => doc.getElementById('fetch-metadata');
 const shown = el => el.style.display !== 'none';
+
+const openSettings = async (doc) => {
+  doc.querySelector('.nav-item[data-type="settings"]').click();
+  await sleep(150);
+};
 
 (async () => {
   // A slow-ish server, so the in-flight state is observable — fetching
@@ -131,6 +137,78 @@ const shown = el => el.style.display !== 'none';
     await sleep(400);
     check('a different name on RAWG is named in the note',
           t.doc.getElementById('install-error').textContent.includes("Director's Cut"), true);
+  }
+
+  // === the settings block =============================================
+  {
+    const t = await boot();
+    await openSettings(t.doc);
+
+    const key = t.doc.getElementById('rawg-key-input');
+    check('the key field is on the settings screen', !!key, true);
+    check('...and is not shown in the clear', key.type, 'password');
+
+    key.value = 'a-rawg-key';
+    key.dispatchEvent(new t.win.Event('change'));
+    await sleep(150);
+    check('...and is persisted with everything else',
+          t.settings.rawg_key, 'a-rawg-key');
+  }
+
+  // === the library-wide run ===========================================
+  {
+    // Slow enough to observe mid-run, as a real fetch of a cover and
+    // half a dozen screenshots is.
+    const t = await boot({ delay: 400 });
+    await openSettings(t.doc);
+
+    t.doc.getElementById('fetch-all-metadata').click();
+    await sleep(120);
+    const status = t.doc.getElementById('metadata-status');
+    check('the run reports which game it is on',
+          /Fetching 1 of 1: Bare Title/.test(status.textContent), true);
+    check('...and the button cannot be pressed again mid-run',
+          t.doc.getElementById('fetch-all-metadata').disabled, true);
+
+    await sleep(800);
+    check('...then says what it managed',
+          status.textContent, 'Filled in 1 game.');
+    check('...and the button comes back',
+          t.doc.getElementById('fetch-all-metadata').disabled, false);
+
+    const bulk = t.calls.filter(c => c[0] === 'fetch_metadata');
+    check('only the incomplete game was looked up', bulk.length, 1);
+    check('...and the server was told to skip its rescan until the end',
+          bulk[0][1].bulk, true);
+    check('no uncaught errors during the run', t.errors, []);
+  }
+
+  {
+    // Nothing to do is worth saying rather than silently doing nothing.
+    const t = await boot({ result: null });
+    await openSettings(t.doc);
+    // Fill the one incomplete game first, so nothing is left.
+    t.doc.getElementById('fetch-all-metadata').click();
+    await sleep(500);
+    t.doc.getElementById('fetch-all-metadata').click();
+    await sleep(200);
+    check('a complete library says so',
+          t.doc.getElementById('metadata-status').textContent,
+          'Every game already has a description and a cover.');
+  }
+
+  {
+    // A bad key fails every remaining game, so the run stops.
+    const t = await boot({ fails: true });
+    await openSettings(t.doc);
+    t.doc.getElementById('fetch-all-metadata').click();
+    await sleep(400);
+    const status = t.doc.getElementById('metadata-status').textContent;
+    check('a run that stopped says why', status.includes('Stopped:'), true);
+    check('...naming the reason', status.includes('rejected the API key'), true);
+    check('...and the button is usable again',
+          t.doc.getElementById('fetch-all-metadata').disabled, false);
+    check('no uncaught errors when a run stops', t.errors, []);
   }
 
   finish();

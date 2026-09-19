@@ -410,7 +410,23 @@ def main() -> int:
     srv.RAWG_API_KEY = ""
     check("no key configured is a clear 502, not a crash",
           client.post("/metadata/PS1/Bare Title").status_code, 502)
+    check("...but a key sent with the request is enough on its own",
+          client.post("/metadata/PS1/Bare Title?overwrite=1",
+                      headers={"X-RAWG-Key": "from-the-app"}).status_code, 200)
     srv.RAWG_API_KEY = "test-key"
+
+    # Working through a list, the caller asks for the rescan to be
+    # skipped: one per game would cost more than the fetching does.
+    scans_before = scans["count"] if "scans" in dir() else None
+    real_reload = srv._reload_catalog
+    reloads = {"count": 0}
+    srv._reload_catalog = lambda: (reloads.__setitem__("count", reloads["count"] + 1),
+                                   real_reload())[1]
+    client.post("/metadata/PS1/Bare Title?overwrite=1")
+    check("a single fetch rescans afterwards", reloads["count"], 1)
+    client.post("/metadata/PS1/Bare Title?overwrite=1&rescan=0")
+    check("...and a bulk one does not", reloads["count"], 1)
+    srv._reload_catalog = real_reload
 
     shutil.rmtree(bare)
     srv._reload_catalog()

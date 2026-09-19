@@ -423,8 +423,14 @@ def metadata_route(platform: str, title: str):
     except MetadataError as e:
         abort(502, str(e))
 
-    # The folder changed, so the cached catalog is now behind.
-    _reload_catalog()
+    # The folder changed, so the cached catalog is behind — unless the
+    # caller says it is working through a list, in which case rescanning
+    # the whole library once per game would cost far more than the
+    # fetches do. The client's next /library call picks the changes up
+    # anyway: writing into a game's folder moves its mtime, which is
+    # exactly what the catalog's signature check watches.
+    if request.args.get("rescan", "").lower() not in {"0", "false", "no"}:
+        _reload_catalog()
     return jsonify(result.to_dict())
 
 
@@ -462,7 +468,13 @@ def metadata_all_route():
 
 def _fetch_metadata_for(game_id: str, *, overwrite: bool):
     game = _catalog[game_id]
-    client = RawgClient(RAWG_API_KEY, requests.Session())
+    # A key sent with the request wins over the configured one: it is
+    # the more recent statement of intent, and it means the whole thing
+    # can be set up from the app without editing a file on this
+    # machine. Taken from a header rather than the query string so it
+    # stays out of access logs and browser history.
+    key = request.headers.get("X-RAWG-Key", "").strip() or RAWG_API_KEY
+    client = RawgClient(key, requests.Session())
     return fill_game_folder(
         _resolve_game_dir(game_id),
         game.title,

@@ -657,6 +657,10 @@ and the configured version disagree.
 Nothing works until you open Settings (the gear at the bottom of the sidebar)
 and fill in:
 
+- **RAWG key** (optional) — under *Game metadata*. Sent to the library server
+  with each fetch request, so the server needs no key of its own. The button
+  beside it fills in every game missing a description or a cover, one at a time
+  so the count on screen is real; a single game can be done from its own page.
 - **Library server address** — the library server machine's LAN address, e.g.
   `http://192.168.1.20:8420`
 - **Install directory** — use the Browse button; it's a real native folder picker

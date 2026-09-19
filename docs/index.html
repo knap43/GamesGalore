@@ -214,6 +214,14 @@
   }
   .setting-label { display: block; font-size: 13.5px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; }
   .setting-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 10px; }
+  /* The browser's default link blue is the one colour in this app that
+     nobody chose. */
+  .setting-desc a {
+    color: var(--accent-pink);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(255,79,158,0.35);
+  }
+  .setting-desc a:hover { border-bottom-color: var(--accent-pink); }
 
   .setting-input {
     width: 100%;
@@ -1233,6 +1241,23 @@
           Only needed if the server has <code>SAVE_TOKEN</code> set. The saves are the one
           writable thing it exposes; everything else it serves is read-only.
         </div>
+      </div>
+
+      <div class="setting-block">
+        <label class="setting-label" for="rawg-key-input">Game metadata</label>
+        <div class="setting-desc">
+          Descriptions, cover art, screenshots and trailers come from
+          <a href="https://rawg.io/apidocs" target="_blank" rel="noreferrer">RAWG</a>; a free
+          key takes a minute to get. The key is sent to the library server with each request,
+          so the server needs none of its own. Nothing already in a game's folder is
+          overwritten.
+        </div>
+        <div class="setting-input-row">
+          <input class="setting-input" id="rawg-key-input" type="password"
+                 placeholder="RAWG API key" autocomplete="off">
+          <button class="browse-button" id="fetch-all-metadata" type="button">Fetch metadata</button>
+        </div>
+        <div class="setting-desc" id="metadata-status" style="margin-top:10px;"></div>
       </div>
 
       <div class="setting-block" id="switch-saves-block">
@@ -2366,6 +2391,7 @@ let state = {
                           // library whose games carry a game.json
   installedOnly: false,
   query: '',
+  rawgKey: '',
   sort: 'alpha', // persisted with the rest of the settings; the pills in the
                  // topbar change it. Sorting by playtime does real work now
                  // that the launcher records it.
@@ -2417,6 +2443,8 @@ async function loadSettings() {
   state.prefixRoot = s.prefix_root || '';
   state.saveSync = s.save_sync || state.saveSync;
   if (s.sort) state.sort = s.sort;
+  state.rawgKey = s.rawg_key || '';
+  document.getElementById('rawg-key-input').value = state.rawgKey;
   document.getElementById('prefix-root-input').value = state.prefixRoot;
   document.getElementById('device-name-input').value = state.saveSync.device_name || '';
   document.getElementById('switch-data-dir-input').value = state.saveSync.switch_data_dir || '';
@@ -2441,6 +2469,7 @@ async function persistSettings() {
       prefix_root: state.prefixRoot,
       save_sync: state.saveSync,
       sort: state.sort,
+      rawg_key: state.rawgKey,
     },
   });
 }
@@ -2953,6 +2982,70 @@ function renderFetchButton(game) {
 /* Asks the server to fill the game's folder from RAWG, then reloads
    the catalog: the description, cover, screenshots and trailer being
    rendered are the files that just landed on the server's disk. */
+/* Fills in every game that is missing a description or a cover.
+
+   The loop is here rather than on the server — which has an endpoint
+   that does the whole library in one call — for one reason: progress.
+   A five-hundred-game library is many minutes of work, and a button
+   that sits there until it is finished is indistinguishable from a
+   button that has hung. Each game is a separate request, so the count
+   on screen is real, and `bulk` tells the server to skip its rescan
+   until the end. */
+let metadataRunning = false;
+
+async function fetchAllMetadata() {
+  if (!TAURI || metadataRunning) return;
+
+  const button = document.getElementById('fetch-all-metadata');
+  const status = document.getElementById('metadata-status');
+  const pending = GAMES.filter(g => !g.description || !g.cover);
+
+  if (pending.length === 0) {
+    status.textContent = 'Every game already has a description and a cover.';
+    return;
+  }
+
+  metadataRunning = true;
+  button.disabled = true;
+
+  let filled = 0;
+  let failed = 0;
+  let stopped = null;
+
+  for (const [index, game] of pending.entries()) {
+    status.textContent = `Fetching ${index + 1} of ${pending.length}: ${game.title}…`;
+    try {
+      const result = await TAURI.core.invoke('fetch_metadata', {
+        serverBase: state.serverBase,
+        gameId: game.id,
+        bulk: true,
+      });
+      if (result.error) failed++;
+      else filled++;
+    } catch (err) {
+      // A bad key or a rate limit will fail every remaining game too,
+      // so there is nothing to gain from four hundred more attempts.
+      console.error('metadata fetch failed', err);
+      stopped = String(err);
+      break;
+    }
+  }
+
+  // One reload for the lot: the server skipped its own rescan per game,
+  // and writing into those folders moved their mtimes, so the catalog
+  // rebuilds itself on this call.
+  await loadGames();
+  renderShell();
+
+  const summary = `Filled in ${filled} game${filled === 1 ? '' : 's'}`
+    + (failed ? `, ${failed} with no match on RAWG` : '')
+    + (stopped ? `. Stopped: ${stopped}` : '.');
+  status.textContent = summary;
+
+  metadataRunning = false;
+  button.disabled = false;
+}
+
 async function fetchMetadata(game) {
   const button = document.getElementById('fetch-metadata');
   button.disabled = true;
@@ -2962,6 +3055,7 @@ async function fetchMetadata(game) {
     const result = await TAURI.core.invoke('fetch_metadata', {
       serverBase: state.serverBase,
       gameId: game.id,
+      bulk: false, // one game, so the server may rescan straight away
     });
 
     if (result.error) {
@@ -3267,6 +3361,11 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  if (e.target.closest('#fetch-all-metadata')) {
+    fetchAllMetadata();
+    return;
+  }
+
   if (e.target.closest('#fetch-metadata')) {
     const game = GAMES.find(g => g.id === currentDetailId);
     if (game) fetchMetadata(game);
@@ -3393,6 +3492,11 @@ document.getElementById('save-sync-toggle').addEventListener('click', () => {
 
 document.getElementById('device-name-input').addEventListener('change', (e) => {
   state.saveSync.device_name = e.target.value.trim();
+  persistSettings();
+});
+
+document.getElementById('rawg-key-input').addEventListener('change', (e) => {
+  state.rawgKey = e.target.value.trim();
   persistSettings();
 });
 

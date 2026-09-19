@@ -218,9 +218,16 @@ POST /metadata/<platform>/<title>     one game
 POST /metadata                        every game missing a description or cover
 ```
 
-Both take `?overwrite=1`, both are behind `SAVE_TOKEN` when one is set — they
-write into the library — and both rescan afterwards, so the catalog reflects the
-new files immediately. A bad key or a rate limit stops a library-wide run rather
+Both take `?overwrite=1`, and both are behind `SAVE_TOKEN` when one is set, since
+they write into the library. The single-game route also takes `?rescan=0`, which
+the app passes while working through a list — one full library rescan per game
+would cost far more than the fetching does, and the next `/library` call picks
+the changes up anyway, because writing into a game's folder moves the mtime the
+catalog's signature watches.
+
+An `X-RAWG-Key` header overrides `RAWG_API_KEY` for that request, which is how
+the app supplies a key without one being written into this machine's config. It
+is a header rather than a query parameter so it stays out of access logs. A bad key or a rate limit stops a library-wide run rather
 than making four hundred more requests that cannot work; one game failing for its
 own reasons is recorded and the run continues.
 

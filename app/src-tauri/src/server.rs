@@ -80,21 +80,37 @@ pub async fn fetch_metadata(
     app: AppHandle,
     server_base: String,
     game_id: String,
+    // `bulk` is true while working through a list: the server then
+    // skips its rescan, which would otherwise cost a full library scan
+    // per game rather than one at the end.
+    bulk: Option<bool>,
 ) -> Result<FetchedMetadata, String> {
     let url = format!(
-        "{}/metadata/{}",
+        "{}/metadata/{}{}",
         server_base.trim_end_matches('/'),
         crate::install_state::encode_path_segments(&game_id),
+        if bulk.unwrap_or(false) {
+            "?rescan=0"
+        } else {
+            ""
+        },
     );
 
     // The same token the save endpoints take: the server guards
     // everything that writes with one key, and this writes into the
     // library itself.
-    let token = crate::settings::get_settings(app).save_sync.token;
+    let settings = crate::settings::get_settings(app);
     let request = reqwest::Client::new().post(url);
-    let request = match token.trim() {
+    let request = match settings.save_sync.token.trim() {
         "" => request,
         token => request.bearer_auth(token),
+    };
+    // The RAWG key travels in a header rather than the query string, so
+    // it stays out of access logs. Omitted entirely when empty, leaving
+    // the server to use whatever is in its own config.
+    let request = match settings.rawg_key.trim() {
+        "" => request,
+        key => request.header("X-RAWG-Key", key),
     };
 
     let response = request.send().await.map_err(|e| e.to_string())?;
