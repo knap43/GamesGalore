@@ -251,8 +251,12 @@ outright:
 
 Every key is optional and a malformed file is treated as an absent one — a
 catalog that refused to list a game because somebody left a trailing comma in
-its metadata would be a worse outcome than a game with no genre. The client
-styles cards by genre and offers a genre filter when any game has one.
+its metadata would be a worse outcome than a game with no genre.
+
+The client uses all three: the genre styles the card and drives a sidebar
+filter, the tags are clickable buttons in the detail view that filter the
+library, and the player count shows in the detail header. Search covers the
+genre and the tags as well as the title.
 
 ## Conversion and caching
 

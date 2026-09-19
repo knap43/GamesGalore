@@ -90,6 +90,27 @@ actually changes, so ordinary use sends plain URLs.
 Both are done in one place, `refreshAfterMetadata()`, in that order: rescanning
 after refetching would serve the old catalog and then rebuild it for nobody.
 
+### What the metadata is actually used for
+
+A `game.json` supplies three things, and each does something visible rather than
+sitting in the catalog:
+
+- **Genre** decides the card's gradient, appears on the card and as a pill in the
+  detail header, and gets its own section in the sidebar — which renders itself
+  out of existence for a library that has no genres at all.
+- **Tags** appear as buttons under the description. Clicking one goes back to the
+  library filtered by it, since "what else is like this?" is the only question a
+  tag asks. Stacking them narrows rather than widens — two tags means games
+  carrying both, which is the only reading that makes a second tag worth
+  clicking. The sidebar lists only the tags currently filtering, never the whole
+  vocabulary: five hundred games carry thousands of tags, and a list of them
+  would be a wall rather than a control.
+- **Players** shows in the detail header, as "1 player" or "up to 4 players".
+
+Search covers the title, the genre and the tags. Typing "roguelike" and getting
+nothing from a library full of them, because the word is in no game's *name*, is
+how people learn a search box is unreliable.
+
 ### Starting up before the server answers
 
 `GET /library` rescans the entire source tree on every call, so on a large
