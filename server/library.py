@@ -188,7 +188,7 @@ def _read_sidecar(path: Path) -> dict:
         return {}
 
     out = {}
-    for key in ("title", "genre", "description"):
+    for key in ("title", "description"):
         value = data.get(key)
         if isinstance(value, str) and value.strip():
             out[key] = value.strip()
@@ -196,10 +196,41 @@ def _read_sidecar(path: Path) -> dict:
         value = data.get(key)
         if isinstance(value, int) and not isinstance(value, bool):
             out[key] = value
-    tags = data.get("tags")
-    if isinstance(tags, list):
-        out["tags"] = [t.strip() for t in tags if isinstance(t, str) and t.strip()]
+
+    # `genre` as written by the fetcher, but also `genres` as a list —
+    # which is the shape RAWG itself uses and therefore the shape
+    # anybody copying from it by hand will produce. A file that looks
+    # right and is silently ignored is the worst of both worlds.
+    genre = _names(data.get("genre")) or _names(data.get("genres"))
+    if genre:
+        out["genre"] = genre[0]
+
+    tags = _names(data.get("tags"))
+    if tags:
+        out["tags"] = tags
     return out
+
+
+def _names(value) -> list:
+    """
+    Pulls names out of any of the shapes this field is plausibly
+    written in: a bare string, a list of strings, or a list of objects
+    with a `name` — the last being what RAWG's own JSON looks like.
+    """
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+
+    names = []
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            names.append(item.strip())
+        elif isinstance(item, dict):
+            name = item.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return names
 
 
 def _pick_cover(screenshots: list) -> Optional[str]:

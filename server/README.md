@@ -253,6 +253,12 @@ Every key is optional and a malformed file is treated as an absent one — a
 catalog that refused to list a game because somebody left a trailing comma in
 its metadata would be a worse outcome than a game with no genre.
 
+`genre` and `tags` are read in whichever shape they arrive: a string, a list of
+strings, or a list of `{"name": …}` objects, which is RAWG's own shape and
+therefore what anybody copying from it by hand produces. `genres` is accepted as
+a synonym for `genre`, taking the first. A file that looks right and is silently
+ignored is the worst of both worlds.
+
 The client uses all three: the genre styles the card and drives a sidebar
 filter, the tags are clickable buttons in the detail view that filter the
 library, and the player count shows in the detail header. Search covers the

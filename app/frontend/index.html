@@ -1181,9 +1181,9 @@
       <!-- platform items injected by JS -->
     </nav>
 
-    <nav class="nav-group" id="genre-nav"></nav>
+    <nav class="nav-group" id="genre-nav" style="display:none"></nav>
 
-    <nav class="nav-group" id="tag-nav"></nav>
+    <nav class="nav-group" id="tag-nav" style="display:none"></nav>
 
     <nav class="nav-group" id="status-nav">
       <div class="nav-label">Status</div>
@@ -2604,12 +2604,17 @@ function renderGenreNav() {
   const nav = document.getElementById('genre-nav');
   const genres = Object.keys(counts).sort();
   if (genres.length === 0) {
+    // Hidden, not merely emptied: the sidebar is a flex column with a
+    // gap between its groups, so an empty group still costs that gap —
+    // which is the mysterious hole between Platforms and Status.
     nav.innerHTML = '';
+    nav.style.display = 'none';
     // Anything still selected would go on filtering invisibly.
     state.genres.clear();
     return;
   }
 
+  nav.style.display = '';
   nav.innerHTML = '<div class="nav-label">Genres</div>' + genres.map(genre => `
     <div class="nav-item${state.genres.has(genre) ? ' active' : ''}" data-type="genre" data-value="${genre}" tabindex="0" role="button">
       <span class="nav-item-inner">${genre}</span>
@@ -2627,8 +2632,10 @@ function renderTagNav() {
   const nav = document.getElementById('tag-nav');
   if (state.tags.size === 0) {
     nav.innerHTML = '';
+    nav.style.display = 'none'; // see renderGenreNav: an empty group still costs a gap
     return;
   }
+  nav.style.display = '';
   nav.innerHTML = '<div class="nav-label">Tags</div>' + [...state.tags].sort().map(tag => `
     <div class="nav-item active" data-type="tag" data-value="${tag}" tabindex="0" role="button">
       <span class="nav-item-inner">${tag}</span>
