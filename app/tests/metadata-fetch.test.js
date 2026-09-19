@@ -25,7 +25,7 @@ const FILLED = [
   BARE[1],
 ];
 
-async function boot({ result, fails = false, delay = 0 } = {}) {
+async function boot({ result, fails = false, delay = 0, rescanFails = false } = {}) {
   const calls = [];
   let fetched = false;
   const settings = {
@@ -46,6 +46,9 @@ async function boot({ result, fails = false, delay = 0 } = {}) {
       case 'get_install_states': return {};
       case 'get_playtime': return {};
       case 'list_launch_candidates': return [];
+      case 'rescan_library':
+        if (rescanFails) throw new Error('server returned 500');
+        return null;
       case 'fetch_metadata':
         if (delay) await sleep(delay);
         if (fails) throw new Error('server returned 502: RAWG rejected the API key');
@@ -209,6 +212,57 @@ const openSettings = async (doc) => {
     check('...and the button is usable again',
           t.doc.getElementById('fetch-all-metadata').disabled, false);
     check('no uncaught errors when a run stops', t.errors, []);
+  }
+
+  // === refreshing after the data changes ==============================
+  // Same URLs, different bytes: the webview caches by URL and would go
+  // on showing the art it fetched a minute ago.
+  {
+    const t = await boot();
+    await openGame(t.doc, 'Bare Title');
+    button(t.doc).click();
+    await sleep(500);
+
+    const cover = t.doc.querySelector('.card .cover-image');
+    check('media URLs carry a version once something has changed',
+          /[?&]v=\d+/.test(cover.getAttribute('src')), true);
+    check('...pointing at the same file',
+          cover.getAttribute('src').startsWith('http://x/cover.jpg'), true);
+
+    const shot = [...t.doc.querySelectorAll('.thumb img')][0];
+    check('...and so do the screenshots in the strip',
+          !shot || /[?&]v=\d+/.test(shot.getAttribute('src')), true);
+
+    check('the server was asked to rescan, which an overwrite would not trigger',
+          t.calls.some(c => c[0] === 'rescan_library'), true);
+    check('...and the catalog was reloaded after it',
+          t.calls.filter(c => c[0] === 'fetch_library').length >= 2, true);
+
+    // Order matters: rescanning after refetching would serve the old
+    // catalog and then rebuild it for nobody.
+    const rescanAt = t.calls.findIndex(c => c[0] === 'rescan_library');
+    const reloadAt = t.calls.findIndex((c, i) => c[0] === 'fetch_library' && i > rescanAt);
+    check('...in that order', reloadAt > rescanAt, true);
+  }
+
+  {
+    // A library with no fetches behind it uses plain URLs.
+    const t = await boot();
+    await openGame(t.doc, 'Complete Title');
+    const cover = t.doc.querySelector('.card .cover-image');
+    check('nothing is versioned before anything changes',
+          cover.getAttribute('src'), 'http://x/cover.jpg');
+  }
+
+  {
+    // A server that cannot rescan must not cost the refresh.
+    const t = await boot({ rescanFails: true });
+    await openGame(t.doc, 'Bare Title');
+    button(t.doc).click();
+    await sleep(500);
+    check('a failed rescan still refreshes what it can',
+          t.doc.getElementById('description').textContent.includes('long dark corridor'), true);
+    check('...without an uncaught error', t.errors, []);
   }
 
   finish();

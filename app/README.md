@@ -16,7 +16,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
 | `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
-| `server.rs` (`fetch_metadata`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button. The work happens on the server, which is the machine holding the library. |
+| `server.rs` (`fetch_metadata`, `rescan_library`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button, and to rescan afterwards. The work happens on the server, which is the machine holding the library. |
 | `playtime.rs` | `playtime.json` beside them: seconds played, last played and a session count per game, recorded by the launcher. See **Playtime** below. |
 | `saves.rs` | Locates a game's save data, packs it as a tar.gz and syncs it with the server. See **Cloud saves** below. |
 
@@ -69,6 +69,26 @@ durable fact worth keeping mid-install is that one is in progress, and the
 `Downloading` status persisted at the start records exactly that — which is
 also what lets `cancel_install` recognise and clear an install orphaned by the
 app closing mid-download.
+
+### Refreshing after a metadata fetch
+
+Two things go stale when the server's copy of the library changes under the
+client, and neither is fixed by refetching the catalog.
+
+The **server's own catalog cache** rebuilds when a game directory's mtime moves.
+Adding files to a folder moves it; replacing a file inside one does not — so an
+`--overwrite` fetch would leave the catalog right on disk and stale in memory
+until the cache aged out. `rescan_library` asks for a scan outright, which costs
+one scan and removes the question.
+
+The **webview's image cache** is keyed by URL, and a fetched cover arrives at
+exactly the URL the placeholder came from, so WebKit would go on showing the old
+one. Every media URL therefore carries a `v=` stamp that increments whenever the
+app knows the bytes behind those URLs have changed. It is zero until something
+actually changes, so ordinary use sends plain URLs.
+
+Both are done in one place, `refreshAfterMetadata()`, in that order: rescanning
+after refetching would serve the old catalog and then rebuild it for nobody.
 
 ### Starting up before the server answers
 

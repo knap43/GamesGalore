@@ -128,6 +128,28 @@ pub async fn fetch_metadata(
         .map_err(|e| e.to_string())
 }
 
+/// Asks the server to rescan the library from disk.
+///
+/// The server serves a cached catalog and rebuilds it when a game
+/// directory's mtime moves. Adding files to a folder does move it;
+/// replacing a file inside one does not — so after an `--overwrite`
+/// metadata fetch, the catalog would be right on disk and stale in
+/// memory until the cache aged out. One explicit scan removes the
+/// question.
+#[tauri::command]
+pub async fn rescan_library(server_base: String) -> Result<(), String> {
+    let url = format!("{}/rescan", server_base.trim_end_matches('/'));
+    let response = reqwest::Client::new()
+        .post(url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("server returned {}", response.status()));
+    }
+    Ok(())
+}
+
 /// Surfaces the server's own `nsz` check in the client UI — e.g. to
 /// grey out installing a Switch title if the server that would do the
 /// conversion doesn't actually have the tool available.

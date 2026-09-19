@@ -1546,12 +1546,27 @@ function getSizeGB(game) {
    <img>/<video> elements. Mock games (browser-preview only) get a
    small synthesized placeholder set instead, since there's nothing
    real to show. */
+/* Bumped whenever the server's copy of a game's media changes under
+   us — which, with a metadata fetch, it does at a URL that has not
+   changed at all. The webview caches by URL and would go on showing
+   the placeholder it fetched a minute ago, so every media URL carries
+   this as a query parameter: same file, different address, no stale
+   image. Zero until something actually changes, so the common case is
+   a plain URL. */
+let mediaVersion = 0;
+
+function versioned(url) {
+  if (!url || !mediaVersion) return url;
+  return url + (url.includes('?') ? '&' : '?') + `v=${mediaVersion}`;
+}
+
 function buildMedia(game) {
   const hasRealScreenshots = Array.isArray(game.screenshots) && game.screenshots.length > 0;
   if (hasRealScreenshots) {
     const items = [];
-    if (game.trailer) items.push({ type: 'trailer', label: 'Trailer', url: game.trailer });
-    game.screenshots.forEach((url, i) => items.push({ type: 'screenshot', label: `Screenshot ${i + 1}`, url }));
+    if (game.trailer) items.push({ type: 'trailer', label: 'Trailer', url: versioned(game.trailer) });
+    game.screenshots.forEach((url, i) =>
+      items.push({ type: 'screenshot', label: `Screenshot ${i + 1}`, url: versioned(url) }));
     return items;
   }
   const items = [{ type: 'trailer', label: 'Trailer' }];
@@ -2744,7 +2759,7 @@ function cardSubLine(g) {
 function cardHTML(g) {
   const style = GENRE_STYLES[g.genre] || GENRE_STYLES.Indie;
   const coverInner = g.cover
-    ? `<img class="cover-image" src="${g.cover}" alt="${g.title}" loading="lazy">`
+    ? `<img class="cover-image" src="${versioned(g.cover)}" alt="${g.title}" loading="lazy">`
     : `<div class="monogram">${initials(g.title)}</div>`;
   return `
     <div class="card" tabindex="0" role="button" aria-label="${g.title}" data-id="${g.id}">
@@ -2921,6 +2936,28 @@ function renderFetchButton(game) {
    until the end. */
 let metadataRunning = false;
 
+/* Everything that has to happen after the server's copy of the library
+   changes underneath us.
+
+   The rescan is the part that isn't obvious. The server serves a
+   cached catalog and rescans when a game directory's mtime moves —
+   which adding files does, but *replacing* one does not, so an
+   --overwrite run would otherwise go unnoticed until the cache aged
+   out. Asking for a rescan outright costs one scan and removes the
+   question. */
+async function refreshAfterMetadata() {
+  mediaVersion++; // same URLs, different bytes; see versioned()
+  try {
+    await TAURI.core.invoke('rescan_library', { serverBase: state.serverBase });
+  } catch (err) {
+    // Not fatal: the catalog below may be a few minutes stale rather
+    // than wrong, and saying so would be noise.
+    console.error('rescan failed', err);
+  }
+  await loadGames();
+  renderShell();
+}
+
 async function fetchAllMetadata() {
   if (!TAURI || metadataRunning) return;
 
@@ -2959,11 +2996,10 @@ async function fetchAllMetadata() {
     }
   }
 
-  // One reload for the lot: the server skipped its own rescan per game,
-  // and writing into those folders moved their mtimes, so the catalog
-  // rebuilds itself on this call.
-  await loadGames();
-  renderShell();
+  // One refresh for the lot: the server skipped its own rescan per
+  // game, so this is where the catalog is rebuilt and the new art is
+  // pulled past the webview's cache.
+  await refreshAfterMetadata();
 
   const summary = `Filled in ${filled} game${filled === 1 ? '' : 's'}`
     + (failed ? `, ${failed} with no match on RAWG` : '')
@@ -2992,8 +3028,7 @@ async function fetchMetadata(game) {
       return;
     }
 
-    await loadGames();
-    renderShell();
+    await refreshAfterMetadata();
     const updated = GAMES.find(g => g.id === game.id);
     if (updated && currentDetailId === game.id) {
       openGameDetail(game.id); // redraw the whole view against the new data
