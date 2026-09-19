@@ -16,6 +16,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
 | `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
+| `server.rs` (`fetch_metadata`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button. The work happens on the server, which is the machine holding the library. |
 | `playtime.rs` | `playtime.json` beside them: seconds played, last played and a session count per game, recorded by the launcher. See **Playtime** below. |
 | `saves.rs` | Locates a game's save data, packs it as a tar.gz and syncs it with the server. See **Cloud saves** below. |
 

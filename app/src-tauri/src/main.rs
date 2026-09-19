@@ -23,6 +23,7 @@ fn main() {
             server::fetch_library,
             catalog_cache::get_cached_library,
             server::fetch_server_status,
+            server::fetch_metadata,
             dependencies::check_dependency,
             install_state::get_install_states,
             install_state::install_game,

@@ -42,6 +42,11 @@ For the always-on setup this is meant for, `games-galore-server.service` is
 included: adjust `WorkingDirectory` and `User`, drop it in
 `/etc/systemd/system/`, then `systemctl enable --now games-galore-server`.
 
+Covers, descriptions and screenshots can be fetched from
+[RAWG](https://rawg.io/apidocs) rather than written by hand — set `RAWG_API_KEY`
+and run `.venv/bin/python metadata.py`, or press **Fetch details** on a game in
+the app. Nothing already in a game's folder is overwritten.
+
 Switch titles stored as `.nsz` need [`nsz`](https://pypi.org/project/nsz/) on
 this machine — it is in `requirements.txt`, and only the server ever needs it.
 `GET /status` reports whether it was found.

@@ -941,6 +941,13 @@
   }
   /* Neither a failure nor a success: something about this game's setup
      that is worth knowing before you rely on it. */
+  .description-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
   .install-error.is-info {
     background: var(--bg-panel-alt);
     border-color: var(--border-hair-2);
@@ -1359,7 +1366,11 @@
       <div class="thumb-strip" id="thumb-strip"></div>
 
       <div>
-        <div class="description-label">About this game</div>
+        <div class="description-row">
+          <div class="description-label">About this game</div>
+          <button class="browse-button" id="fetch-metadata" type="button"
+                  style="display:none">Fetch details</button>
+        </div>
         <p class="description" id="description"></p>
       </div>
     </div>
@@ -2855,6 +2866,58 @@ function detailMetaHTML(game) {
   return segs.join('<span class="dot-sep"></span>');
 }
 
+/* The button is offered only for a game the server could plausibly
+   fill in — one with no description or no cover — because for a game
+   that already has both, fetching would either change nothing or
+   overwrite something somebody wrote by hand. */
+function renderFetchButton(game) {
+  const button = document.getElementById('fetch-metadata');
+  const worthFetching = !!TAURI && (!game.description || !game.cover);
+  button.style.display = worthFetching ? 'inline-flex' : 'none';
+  button.disabled = false;
+  button.textContent = 'Fetch details';
+}
+
+/* Asks the server to fill the game's folder from RAWG, then reloads
+   the catalog: the description, cover, screenshots and trailer being
+   rendered are the files that just landed on the server's disk. */
+async function fetchMetadata(game) {
+  const button = document.getElementById('fetch-metadata');
+  button.disabled = true;
+  button.textContent = 'Fetching…';
+
+  try {
+    const result = await TAURI.core.invoke('fetch_metadata', {
+      serverBase: state.serverBase,
+      gameId: game.id,
+    });
+
+    if (result.error) {
+      setSaveNote(game, `Couldn't fetch details: ${result.error}`, false);
+      renderFetchButton(game);
+      return;
+    }
+
+    await loadGames();
+    renderShell();
+    const updated = GAMES.find(g => g.id === game.id);
+    if (updated && currentDetailId === game.id) {
+      openGameDetail(game.id); // redraw the whole view against the new data
+      const wrote = result.wrote.length
+        ? `Added ${result.wrote.length} file${result.wrote.length === 1 ? '' : 's'}`
+        : 'Nothing was missing';
+      const matched = result.matched && result.matched !== game.title
+        ? ` — matched "${result.matched}" on RAWG`
+        : '';
+      setSaveNote(updated, `${wrote}${matched}.`);
+    }
+  } catch (err) {
+    console.error('metadata fetch failed', err);
+    setSaveNote(game, `Couldn't fetch details: ${err}`, false);
+    renderFetchButton(game);
+  }
+}
+
 function openGameDetail(id) {
   const game = GAMES.find(g => g.id === id);
   if (!game) return;
@@ -2868,6 +2931,7 @@ function openGameDetail(id) {
   document.getElementById('description').textContent = getDescription(game);
 
   renderCtaRow(game);
+  renderFetchButton(game);
   renderThumbStrip(game);
   renderViewerMedia(game);
   refreshLaunchCandidates(game); // async; fills in the picker once it resolves
@@ -3128,6 +3192,12 @@ document.addEventListener('click', (e) => {
   const option = e.target.closest('.launch-option');
   if (option) {
     commitLaunchChoice(option.dataset.launchName);
+    return;
+  }
+
+  if (e.target.closest('#fetch-metadata')) {
+    const game = GAMES.find(g => g.id === currentDetailId);
+    if (game) fetchMetadata(game);
     return;
   }
 

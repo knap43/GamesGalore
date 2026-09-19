@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 # Adjust to wherever the drive is actually mounted on this machine.
@@ -55,6 +56,18 @@ LEGACY_SAVE_ROOT = Path.home() / ".local" / "share" / "vault-server" / "saves"
 # in place several levels down, which no cheap check can see. POST
 # /rescan forces one immediately.
 CATALOG_TTL_SECONDS = 10 * 60
+
+# RAWG (https://rawg.io/apidocs) is where the metadata fetcher gets
+# descriptions, cover art, screenshots and trailers. A free key is
+# instant and generous enough for a personal library.
+#
+# Read from the environment first so a key never has to be committed:
+#   RAWG_API_KEY=... .venv/bin/python server.py
+RAWG_API_KEY = os.environ.get("RAWG_API_KEY", "")
+
+# Screenshots to keep per game. RAWG often has a dozen; the detail view
+# shows a strip of thumbnails, and past half a dozen nobody scrolls.
+METADATA_MAX_SCREENSHOTS = 6
 
 # Shared secret for the save endpoints, which are the only writable
 # surface this server exposes. Empty means no check at all, which is
