@@ -499,6 +499,27 @@ def main() -> int:
     check("the sidecar is not served as part of the game",
           any(f["filename"] == "game.json" for f in hm["files"]), False)
 
+    # The shapes a game.json plausibly arrives in. RAWG's own JSON uses
+    # objects with a `name`, so anybody copying from it by hand writes
+    # that — and a file that looks right and is silently ignored is the
+    # worst of both worlds.
+    from library import _read_sidecar
+
+    shapes = {
+        "the fetcher's own": {"genre": "RPG", "tags": ["Open World"]},
+        "RAWG's, copied":    {"genres": [{"name": "RPG"}], "tags": [{"name": "Open World"}]},
+        "plain lists":       {"genres": ["RPG"], "tags": ["Open World"]},
+    }
+    probe = root / "PC" / "Hollow Meridian" / "game.json"
+    for label, shape in shapes.items():
+        probe.write_text(json.dumps(shape))
+        parsed = _read_sidecar(probe)
+        check(f"a sidecar in {label} shape is read",
+              (parsed.get("genre"), parsed.get("tags")), ("RPG", ["Open World"]))
+    probe.write_text(json.dumps({"genre": 42, "release_year": "2011", "players": True}))
+    check("...and values of the wrong type are ignored rather than fatal",
+          _read_sidecar(probe), {})
+
     (sidecar_dir / "game.json").write_text("{ this is not json,,, }")
     srv._reload_catalog()
     with srv.app.test_request_context():
