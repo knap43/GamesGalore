@@ -294,6 +294,19 @@
   .emulator-fields-row .setting-input { flex: 1; }
   .emulator-fields-row .setting-desc { flex: 1; }
 
+  /* The PC runtime switch. Pills rather than a <select> for the reason
+     given above the sort row, and styled by the same rules. Buttons
+     also keep it in the Settings keyboard chain, which walks
+     `button, input`. */
+  .runtime-row { display: flex; align-items: center; gap: 6px; }
+  .runtime-label {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin-right: 2px;
+  }
+
   .toggle-switch {
     flex-shrink: 0;
     width: 42px;
@@ -414,7 +427,11 @@
     color: var(--text-faint);
     margin-right: 4px;
   }
-  .sort-pill {
+  /* Shared with the PC runtime switch in Settings: the same control
+     doing the same job, so one set of rules rather than two. The
+     classes stay distinct so that "every sort pill on the page" still
+     means exactly the sort row. */
+  .sort-pill, .runtime-pill {
     background: var(--bg-card);
     border: 1px solid var(--border-hair);
     border-radius: var(--radius-pill);
@@ -425,13 +442,13 @@
     cursor: pointer;
     transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
   }
-  .sort-pill:hover { color: var(--text-primary); }
-  .sort-pill:focus-visible {
+  .sort-pill:hover, .runtime-pill:hover { color: var(--text-primary); }
+  .sort-pill:focus-visible, .runtime-pill:focus-visible {
     outline: none;
     border-color: var(--accent-pink);
     color: var(--text-primary);
   }
-  .sort-pill.active {
+  .sort-pill.active, .runtime-pill.active {
     background: linear-gradient(135deg, rgba(255,79,158,0.16), rgba(155,92,246,0.16));
     border-color: rgba(255,79,158,0.45);
     color: var(--text-primary);
@@ -1295,10 +1312,11 @@
       </div>
 
       <div class="setting-block">
-        <label class="setting-label" for="prefix-root-input">Wine prefixes (PC)</label>
+        <label class="setting-label" for="prefix-root-input">Game prefixes (PC)</label>
         <div class="setting-desc">
-          Each PC game runs in its own Wine prefix, which isolates games from each other and
-          makes that prefix the game's save data. Leave this empty to keep them in
+          Each PC game runs in its own prefix — Wine's or Proton's, the layout is the same —
+          which isolates games from each other and makes that prefix the game's save data.
+          Leave this empty to keep them in
           <code>.wine-prefixes</code> beside the install directory. Games played before this
           existed kept their saves in the shared <code>~/.wine</code>; copy those across by hand
           if you need them.
@@ -1316,8 +1334,9 @@
           Command and arguments used to launch each platform. For a native install, Command is
           just the binary name or path. For a Flatpak — likely for PCSX2 and Eden — set Command to
           <code>flatpak</code> and Args to <code>run &lt;app-id&gt; --</code>, e.g.
-          <code>run net.pcsx2.PCSX2 --</code>. "Check" tests the values currently typed here, not
-          what's saved yet.
+          <code>run net.pcsx2.PCSX2 --</code>. PC additionally picks a runtime: Wine, or Proton
+          for the DirectX 11 and 12 titles Wine alone struggles with. "Check" tests the values
+          currently typed here, not what's saved yet.
         </div>
         <div id="emulator-rows"></div>
         <div class="emulator-row" data-row="server-nsz">
@@ -2393,15 +2412,20 @@ let state = {
  * --------------------------------------------------------------- */
 const TAURI = window.__TAURI__ || null;
 
-const PLATFORM_LABELS = { PS1: 'PS1 — DuckStation', PS2: 'PS2 — PCSX2', PC: 'PC — Wine', Switch: 'Switch — Eden' };
+const PLATFORM_LABELS = { PS1: 'PS1 — DuckStation', PS2: 'PS2 — PCSX2', PC: 'PC — Wine or Proton', Switch: 'Switch — Eden' };
+
+/* What each runtime expects to be invoked as, so switching the pill
+   also switches the command when it is still the other runtime's
+   default. Someone who typed their own command keeps it. */
+const RUNTIME_COMMANDS = { wine: 'wine', proton: 'umu-run' };
 
 /* Mirrors settings.rs's default_emulators() — used when there's no
    Tauri runtime to load real settings from (browser preview). */
 const DEFAULT_EMULATORS = {
-  PS1: { command: 'duckstation-qt', args_prefix: [], version_flag: '-version' },
-  PS2: { command: 'pcsx2-qt', args_prefix: [], version_flag: '--version' },
-  PC: { command: 'wine', args_prefix: [], version_flag: '--version' },
-  Switch: { command: 'eden-cli', args_prefix: [], version_flag: '--version' },
+  PS1: { command: 'duckstation-qt', args_prefix: [], version_flag: '-version', runtime: 'wine', proton_path: '' },
+  PS2: { command: 'pcsx2-qt', args_prefix: [], version_flag: '--version', runtime: 'wine', proton_path: '' },
+  PC: { command: 'wine', args_prefix: [], version_flag: '--version', runtime: 'wine', proton_path: '' },
+  Switch: { command: 'eden-cli', args_prefix: [], version_flag: '--version', runtime: 'wine', proton_path: '' },
 };
 
 async function loadSettings() {
@@ -2450,6 +2474,30 @@ async function persistSettings() {
   });
 }
 
+/* Only PC has two runtimes to choose between: Wine, or Proton through
+   umu-launcher. The rest of the rows would gain an irrelevant control,
+   so they don't get one. */
+function runtimeFields(emu) {
+  const runtime = emu.runtime === 'proton' ? 'proton' : 'wine';
+  const pill = (value, label) => `
+    <button class="runtime-pill${runtime === value ? ' active' : ''}" type="button"
+            data-runtime="${value}" aria-pressed="${runtime === value}">${label}</button>`;
+  return `
+    <div class="runtime-row">
+      <span class="runtime-label">Runtime</span>
+      ${pill('wine', 'Wine')}${pill('proton', 'Proton')}
+    </div>
+    <div class="setting-desc" style="margin:0;${runtime === 'proton' ? '' : 'display:none'}">
+      Proton runs through <code>umu-run</code> (pacman: <code>umu-launcher</code>) and needs no
+      Steam. The first launch downloads a Proton build and the Steam runtime, so it takes a while
+      and wants a connection; after that it is offline like everything else.
+    </div>
+    <input class="setting-input emu-proton-path" data-field="proton_path"
+           style="${runtime === 'proton' ? '' : 'display:none'}"
+           placeholder="Proton build — blank for umu's own, GE-Proton, or a path to one"
+           value="${emu.proton_path || ''}">`;
+}
+
 function renderEmulatorRows() {
   const container = document.getElementById('emulator-rows');
   container.innerHTML = PLATFORM_ORDER.map(platform => {
@@ -2461,6 +2509,7 @@ function renderEmulatorRows() {
           <span class="dependency-status" data-status>Not checked</span>
         </div>
         <div class="emulator-fields">
+          ${platform === 'PC' ? runtimeFields(emu) : ''}
           <input class="setting-input emu-command" data-field="command" placeholder="Command (e.g. duckstation-qt, or flatpak)" value="${emu.command}">
           <input class="setting-input emu-args" data-field="args_prefix" placeholder="Args before the game path (e.g. run net.pcsx2.PCSX2 --)" value="${emu.args_prefix.join(' ')}">
           <div class="emulator-fields-row">
@@ -2472,16 +2521,37 @@ function renderEmulatorRows() {
   }).join('');
 }
 
+/* Switching runtime carries the command with it, but only when the
+   command is still the one the other runtime put there: `wine` becomes
+   `umu-run` and back again, while anything typed by hand — a Flatpak,
+   a wrapper script, a specific build — is left alone, since guessing
+   at a replacement for it would be worse than leaving it wrong. */
+function setRuntime(platform, runtime) {
+  const emu = state.emulators[platform];
+  if (!emu || emu.runtime === runtime) return;
+  const previous = RUNTIME_COMMANDS[emu.runtime === 'proton' ? 'proton' : 'wine'];
+  emu.runtime = runtime;
+  if (!emu.command || emu.command === previous) emu.command = RUNTIME_COMMANDS[runtime];
+  renderEmulatorRows();
+  persistSettings();
+}
+
 /* Values are only written to state.emulators (and persisted) on
    change/blur, not on every keystroke — delegated to the container
    since rows are re-rendered wholesale rather than patched. */
+document.getElementById('emulator-rows').addEventListener('click', (e) => {
+  const pill = e.target.closest('[data-runtime]');
+  if (!pill) return;
+  setRuntime(pill.closest('.emulator-row').dataset.platform, pill.dataset.runtime);
+});
+
 document.getElementById('emulator-rows').addEventListener('change', (e) => {
   const input = e.target.closest('.setting-input');
   if (!input) return;
   const row = input.closest('.emulator-row');
   const platform = row.dataset.platform;
   const field = input.dataset.field;
-  if (!state.emulators[platform]) state.emulators[platform] = { command: '', args_prefix: [], version_flag: '' };
+  if (!state.emulators[platform]) state.emulators[platform] = { command: '', args_prefix: [], version_flag: '', runtime: 'wine', proton_path: '' };
   if (field === 'args_prefix') {
     state.emulators[platform].args_prefix = input.value.trim().split(/\s+/).filter(Boolean);
   } else {

@@ -91,7 +91,9 @@ The package above avoids the question entirely.
 Open Settings (the gear at the bottom of the sidebar) and fill in the library
 server's address — `http://<that machine>:8420` — and an install directory.
 Nothing works until those two are set. Emulator commands for each platform have
-sensible defaults and are worth checking if you use Flatpaks.
+sensible defaults and are worth checking if you use Flatpaks. PC titles run
+through Wine by default and can be switched to Proton in the same row, which
+needs `umu-launcher` from `extra` and no Steam at all.
 
 #### Filling in covers and descriptions
 

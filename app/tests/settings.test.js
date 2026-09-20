@@ -96,6 +96,49 @@ const press = (win, key) => win.document.dispatchEvent(
   check('a text input can be left by arrowing down',
         doc.activeElement.id !== 'server-base-input', true);
 
+  // The PC runtime switch. The fixture's settings.json has no runtime
+  // field at all — as every settings.json written before Proton does —
+  // so this also covers the row rendering from an absent value.
+  const pcRow = () => doc.querySelector('.emulator-row[data-platform="PC"]');
+  const runtimePill = (value) => pcRow().querySelector(`[data-runtime="${value}"]`);
+
+  check('PC starts on Wine', runtimePill('wine').classList.contains('active'), true);
+  check('...and it is the only row offering the choice',
+        doc.querySelectorAll('.runtime-pill').length, 2);
+
+  runtimePill('proton').click();
+  await sleep(50);
+  check('picking Proton is persisted', settings.emulators.PC.runtime, 'proton');
+  check('...and carries the command with it', settings.emulators.PC.command, 'umu-run');
+  check('...and the pill that is now active says so',
+        runtimePill('proton').getAttribute('aria-pressed'), 'true');
+  check('...and the Proton build field appears',
+        pcRow().querySelector('.emu-proton-path').style.display, '');
+
+  const protonPath = pcRow().querySelector('.emu-proton-path');
+  protonPath.value = 'GE-Proton';
+  protonPath.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await sleep(50);
+  check('a chosen Proton build is persisted', settings.emulators.PC.proton_path, 'GE-Proton');
+
+  runtimePill('wine').click();
+  await sleep(50);
+  check('switching back restores the Wine command', settings.emulators.PC.command, 'wine');
+  check('...and hides the Proton build field',
+        pcRow().querySelector('.emu-proton-path').style.display, 'none');
+
+  // A command someone typed themselves is theirs, not ours to replace.
+  const command = pcRow().querySelector('.emu-command');
+  command.value = '/opt/wine-staging/bin/wine';
+  command.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await sleep(50);
+  runtimePill('proton').click();
+  await sleep(50);
+  check('a hand-typed command survives the switch',
+        settings.emulators.PC.command, '/opt/wine-staging/bin/wine');
+  runtimePill('wine').click();
+  await sleep(50);
+
   // Escape from a text field has to work too. Refusing it left a
   // keyboard user stuck in the modal, while a gamepad's B button was
   // never affected — the asymmetry this navigation exists to avoid.

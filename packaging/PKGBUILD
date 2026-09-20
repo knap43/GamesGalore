@@ -45,6 +45,7 @@ depends=('webkit2gtk-4.1' 'gtk3' 'glib2' 'cairo' 'gdk-pixbuf2' 'libsoup3')
 makedepends=('rust' 'cargo' 'pkgconf')
 optdepends=(
   'wine: running PC titles'
+  'umu-launcher: running PC titles through Proton instead of Wine'
   'duckstation: PlayStation titles'
   'pcsx2: PlayStation 2 titles'
   'python: running the library server on this machine too'

@@ -293,7 +293,7 @@ and — after canonicalising, so a symlink can't stand in for one — anything
 landing outside the install directory. This is stricter than the download path
 deliberately: the value here becomes the program that gets spawned.
 
-### Per-game Wine prefixes
+### Per-game prefixes
 
 Each PC title runs in its own Wine prefix rather than sharing the default
 `~/.wine`. Two things follow from that. Games stop inheriting each other's
@@ -314,6 +314,27 @@ prefix. Copy them across by hand if you need them.
 folder. Plenty of Windows games resolve their data — and write their saves —
 relative to the working directory, and inheriting the app's would scatter those
 files wherever Games Galore happened to be started from.
+
+**Proton uses the same prefix.** `umu-run` reads `WINEPREFIX` exactly as Wine
+does, then points `STEAM_COMPAT_DATA_PATH` at the same directory — the `pfx` it
+creates inside is a symlink back to the prefix itself — so `drive_c/users/…`
+stays where the save sync and the prefix migration already look. Nothing about
+the layout changes, which is why Proton costs so little here. The default
+directory keeps its `.wine-prefixes` name: renaming it would strand every prefix
+already on disk to save a word.
+
+One difference is worth knowing. Proton's Windows profile is `steamuser`, while
+Wine's is your own login name. On a prefix Wine created first, umu links
+`steamuser` to the existing profile, so switching a game's runtime keeps its
+saves; a prefix Proton created first has the real directory under `steamuser`,
+and switching that one to Wine gives the game a profile it has never written to.
+Prefixes are per game, so this is a decision per game, and the safe order is the
+one people take anyway: pick a runtime, then play.
+
+Prefix paths are resolved to absolute before they reach either runtime. A
+relative install root was always questionable — it meant something different
+depending on where the app was started from — and umu refuses a `WINEPREFIX`
+that isn't absolute outright.
 
 ### Cloud saves
 
@@ -413,7 +434,10 @@ spawns; the game's lifetime is still not tied to the app, the thread only
 observes. For Wine the child is the wrong thing to wait on — `wine game.exe`
 often returns long before the game does — so it additionally waits on
 `wineserver -w` against that game's prefix, which is only meaningful *because*
-each game has its own.
+each game has its own. Proton needs none of that: `umu-run` defaults to
+Proton's `waitforexitandrun` verb and stays alive as long as the game does, so
+the child process *is* the session. The host's `wineserver` is a different Wine
+from the one inside a Proton build besides, so it is not run for those.
 
 **Saves that land outside the prefix.** Wine's Desktop Integration points a
 prefix's `Documents`, `Saved Games` and friends at the real home directory, and
@@ -425,7 +449,8 @@ quietly left behind, with nothing about the sync looking wrong.
 
 The launcher now prevents it rather than reporting it. When a game's prefix
 doesn't exist yet, `initialise_prefix` runs `wineboot -i` through the configured
-emulator command — so a Flatpak Wine works the same way — and
+emulator command — so a Flatpak Wine works the same way, and Proton gets umu's
+own `createprefix` verb instead — and
 `isolate_profile_links` then replaces those links with real directories inside
 the prefix. The prefix is empty at that moment, which is the entire safety
 argument: nothing can have been saved through a link that has existed for a
@@ -705,7 +730,8 @@ and fill in:
 - **Library server address** — the library server machine's LAN address, e.g.
   `http://192.168.1.20:8420`
 - **Install directory** — use the Browse button; it's a real native folder picker
-- **Each emulator's command/args** — see below
+- **Each emulator's command/args** — see below, including PC's choice of Wine
+  or Proton
 
 Then use the **Check** button next to each emulator (and the one next to
 "Library server (nsz)") to confirm what you configured actually resolves, before
@@ -745,6 +771,47 @@ conventions (a "standard" AppImage taking a bare positional path with `-f` for
 fullscreen, vs. a separate `eden-cli` build using `--game`/`--fullscreen`), and
 `platform_args()` is written for the AppImage shape — so a plausible-looking
 default would silently send the wrong flags to anyone on a different build.
+
+### PC: Wine or Proton
+
+The PC row in Settings has a runtime switch. Wine is the default and is what
+every existing configuration keeps. Proton is the other option, and it is worth
+reaching for when a title wants DirectX 11 or 12, since Proton bundles DXVK and
+VKD3D-Proton and Wine alone frequently does not.
+
+**Steam is not required, and is never run.** Proton is invoked through
+[umu-launcher](https://github.com/Open-Wine-Components/umu-launcher), which is
+in `extra`:
+
+```
+sudo pacman -S umu-launcher
+```
+
+umu fetches the Steam Linux Runtime container and a Proton build itself, and
+sets the `STEAM_COMPAT_*` variables Proton insists on. Picking Proton in
+Settings sets Command to `umu-run` — unless you had typed your own command
+there, which is left alone — and nothing else needs configuring.
+
+The **Proton build** field is umu's `PROTONPATH`:
+
+| Value | Meaning |
+| --- | --- |
+| *(empty)* | umu picks and downloads its own build |
+| `GE-Proton` | the latest GE-Proton, downloaded by umu |
+| a path | a Proton already on disk, including one Steam installed |
+
+That last row is the only sense in which Steam is ever involved: as a place a
+Proton build happens to live. Nothing asks whether the client is installed, and
+nothing launches it.
+
+The first Proton launch of a title downloads a runtime and a build — on the
+order of a gigabyte — and creates the prefix, so it takes a while and needs a
+connection. Every launch after that is offline like the rest of the app.
+**Check** works on this row as it does on the others: `umu-run --version`
+answers it.
+
+What isn't covered: a game whose own build requires the Steam client at runtime
+wants Steam whatever the runtime is, and that has nothing to do with Proton.
 
 **Flatpak dependency checks ask a different question.** `flatpak --version` only
 confirms Flatpak itself is installed, not whether a particular app's Flatpak is
