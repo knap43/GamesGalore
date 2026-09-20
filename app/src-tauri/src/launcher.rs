@@ -4,6 +4,11 @@
 // Eden are likely to be Flatpaks, and there's no single "the emulator
 // lives here" assumption that holds across native installs and
 // Flatpak installs alike.
+//
+// PC has a further choice, Wine or Proton, which is configuration for
+// the same reason. The three places the two differ — the environment a
+// prefix wants, how an empty prefix is made, and what it means for a
+// session to have ended — are collected around `Runtime` below.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -267,46 +272,108 @@ fn find_local_game_file(install_dir: &Path, platform: &str) -> Option<PathBuf> {
     entries.into_iter().next()
 }
 
-/// Where a game's own Wine prefix lives. Each PC title gets one rather
-/// than sharing the default `~/.wine`, for two reasons: it isolates
-/// games from each other's runtime installs and registry, and it makes
-/// the prefix's user directory *be* that game's save data — which is
-/// what lets cloud saves work for PC at all without a per-game manifest
-/// of where each game hides its saves.
+/// Which Windows runtime a platform is launched through.
 ///
-/// Defaults to `.wine-prefixes` beside the install root, so this needs
-/// no configuration; `prefix_root` in settings overrides it.
-/// Creates a Wine prefix up front, so the app decides what is in it
+/// Proton here means umu-launcher's `umu-run`, not Steam: umu fetches
+/// the Steam Linux Runtime container and a Proton build itself, sets
+/// the `STEAM_COMPAT_*` variables Proton insists on, and works with no
+/// Steam client installed. What the app has to do differently is
+/// small, and all of it is in this file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Runtime {
+    Wine,
+    Proton,
+}
+
+impl Runtime {
+    /// Anything unrecognised is Wine. A settings.json naming a runtime
+    /// a later build introduced should launch games through the thing
+    /// this build does have rather than refuse to launch them at all.
+    fn of(emu: &EmulatorConfig) -> Self {
+        if emu.runtime.eq_ignore_ascii_case("proton") {
+            Runtime::Proton
+        } else {
+            Runtime::Wine
+        }
+    }
+}
+
+/// The environment a prefix needs, for either runtime.
+///
+/// umu reads `WINEPREFIX` exactly as Wine does and then sets
+/// `STEAM_COMPAT_DATA_PATH` to the same directory — the `pfx` it
+/// creates inside is a symlink pointing back at the prefix itself —
+/// so `drive_c/users/…` lands where the save sync and the prefix
+/// migration already look for it. That is the whole reason Proton
+/// costs so little here: the prefix layout does not change.
+///
+/// `PROTONPATH` is left unset when nothing is configured, which is
+/// umu's way of being told to pick and download a build itself.
+fn runtime_env(runtime: Runtime, emu: &EmulatorConfig, prefix: &Path) -> Vec<(String, String)> {
+    let mut env = vec![(
+        "WINEPREFIX".to_string(),
+        prefix.to_string_lossy().to_string(),
+    )];
+    if runtime == Runtime::Proton && !emu.proton_path.trim().is_empty() {
+        env.push(("PROTONPATH".to_string(), emu.proton_path.trim().to_string()));
+    }
+    env
+}
+
+/// What to run to create the prefix and stop, for either runtime.
+///
+/// `wineboot -i` is what Wine runs implicitly on first use.
+/// `createprefix` is umu's equivalent: it is the documented way of
+/// asking for a prefix with no executable to follow, which Proton
+/// would otherwise refuse as a missing program.
+///
+/// Both go through the configured command and its `args_prefix`, so a
+/// Flatpak Wine (`flatpak run … wineboot -i`) works the same way.
+fn prefix_init_args(runtime: Runtime, emu: &EmulatorConfig) -> Vec<String> {
+    let mut args = emu.args_prefix.clone();
+    match runtime {
+        Runtime::Wine => {
+            args.push("wineboot".to_string());
+            args.push("-i".to_string());
+        }
+        Runtime::Proton => args.push("createprefix".to_string()),
+    }
+    args
+}
+
+/// Creates the prefix up front, so the app decides what is in it
 /// rather than discovering afterwards what Wine decided.
 ///
-/// `wineboot -i` is what Wine runs implicitly on first use; running it
-/// deliberately just means it happens at a moment when the prefix is
-/// known to be empty, which is the only moment `isolate_profile_links`
-/// can safely do its work. Run through the configured emulator command
-/// rather than a bare `wine`, so a Flatpak install works the same way
-/// (`flatpak run … wineboot -i`).
+/// Running it deliberately just means it happens at a moment when the
+/// prefix is known to be empty, which is the only moment
+/// `isolate_profile_links` can safely do its work.
 ///
-/// Best-effort: if this fails — no Wine, an unusual wrapper, a
-/// permissions problem — the game is launched anyway and Wine creates
-/// the prefix itself, exactly as it did before. The cost is the linked
-/// folders coming back, which the UI already reports.
-fn initialise_prefix(emu: &EmulatorConfig, prefix: &Path) -> Result<(), String> {
-    let mut args = emu.args_prefix.clone();
-    args.push("wineboot".to_string());
-    args.push("-i".to_string());
-
-    let status = Command::new(&emu.command)
-        .args(&args)
-        .env("WINEPREFIX", prefix)
+/// Best-effort: if this fails — no Wine, no umu, an unusual wrapper, a
+/// permissions problem — the game is launched anyway and the runtime
+/// creates the prefix itself, exactly as it did before. The cost is
+/// the linked folders coming back, which the UI already reports.
+fn initialise_prefix(runtime: Runtime, emu: &EmulatorConfig, prefix: &Path) -> Result<(), String> {
+    let mut command = Command::new(&emu.command);
+    command.args(prefix_init_args(runtime, emu));
+    for (key, value) in runtime_env(runtime, emu, prefix) {
+        command.env(key, value);
+    }
+    if runtime == Runtime::Wine {
         // Wine asks about installing Mono and Gecko in a dialog that
         // would sit there unanswered behind the launch. Neither is
         // needed to create the profile directories this is here for.
-        .env("WINEDLLOVERRIDES", "mscoree,mshtml=")
+        // Proton brings its own and asks nothing, and telling it to
+        // disable mscoree would cut .NET games off from the runtime it
+        // ships, so this is Wine's alone.
+        command.env("WINEDLLOVERRIDES", "mscoree,mshtml=");
+    }
+
+    let status = command
         .status()
-        .map_err(|e| format!("running wineboot: {e}"))?;
+        .map_err(|e| format!("preparing the prefix: {e}"))?;
 
     if !status.success() {
-        return Err(format!("wineboot exited with {status}"));
+        return Err(format!("preparing the prefix exited with {status}"));
     }
     Ok(())
 }
@@ -375,6 +442,15 @@ pub fn isolate_profile_links(prefix: &Path, force: bool) -> Vec<String> {
     changed
 }
 
+/// Where a game's own Wine prefix lives. Each PC title gets one rather
+/// than sharing the default `~/.wine`, for two reasons: it isolates
+/// games from each other's runtime installs and registry, and it makes
+/// the prefix's user directory *be* that game's save data — which is
+/// what lets cloud saves work for PC at all without a per-game manifest
+/// of where each game hides its saves.
+///
+/// Defaults to `.wine-prefixes` beside the install root, so this needs
+/// no configuration; `prefix_root` in settings overrides it.
 pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<PathBuf> {
     if platform != "PC" {
         return None;
@@ -388,7 +464,23 @@ pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<
     } else {
         PathBuf::from(&settings.prefix_root)
     };
-    Some(root.join(title))
+    Some(absolute(&root.join(title)))
+}
+
+/// Anchors a relative path to the working directory.
+///
+/// An install root typed as a relative path was always a little
+/// questionable — it would mean something different depending on where
+/// the app was started from — but Wine tolerated it. umu does not: it
+/// refuses a `WINEPREFIX` that isn't absolute outright, so the prefix
+/// is resolved here instead of failing at launch.
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Waits for the session to actually finish, then tells the frontend.
@@ -404,21 +496,29 @@ pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<
 /// actual end of the session — and is only meaningful *because* each
 /// game has its own prefix, since on a shared prefix it would wait for
 /// every Wine game at once.
+///
+/// Proton needs none of that: `umu-run` defaults to Proton's
+/// `waitforexitandrun` verb and so stays alive for as long as the game
+/// does, which makes the child itself the right thing to wait on. The
+/// host's `wineserver` is a different Wine from the one inside the
+/// Proton build besides, and pointing it at a Proton prefix is not
+/// something to do for no gain.
 fn supervise(
     app: AppHandle,
     mut child: std::process::Child,
     game_id: String,
     prefix: Option<PathBuf>,
+    runtime: Runtime,
     watching: Vec<crate::prefix_migrate::LinkSnapshot>,
 ) {
     let started_at = crate::playtime::now();
     let session_began = crate::prefix_migrate::now_millis();
     std::thread::spawn(move || {
         let _ = child.wait();
-        if let Some(prefix) = prefix {
+        if let (Runtime::Wine, Some(prefix)) = (runtime, &prefix) {
             let _ = Command::new("wineserver")
                 .arg("-w")
-                .env("WINEPREFIX", &prefix)
+                .env("WINEPREFIX", prefix)
                 .status();
         }
 
@@ -435,10 +535,12 @@ fn supervise(
                 let _ = app.emit("prefix:saves-moved", (&game_id, &migrated));
             }
         }
-        // Recorded after wineserver has gone: for a PC game the
-        // emulator process is wine's launcher, which returns long
-        // before the game itself does, and stopping the clock there
-        // would record every session as a few seconds long.
+        // Recorded once the session is genuinely over — after
+        // wineserver has gone under Wine, or after umu-run has
+        // returned under Proton. Under Wine the emulator process is
+        // wine's launcher, which returns long before the game itself
+        // does, and stopping the clock there would record every
+        // session as a few seconds long.
         crate::playtime::finished(
             &app,
             &game_id,
@@ -517,6 +619,7 @@ fn launch_blocking(
         command.current_dir(parent);
     }
 
+    let runtime = Runtime::of(emu);
     let prefix = prefix_dir(&settings, &platform, &game_id);
     let mut watching = Vec::new();
     if let Some(prefix) = &prefix {
@@ -533,9 +636,10 @@ fn launch_blocking(
         // saves it has already written.
         let fresh = !prefix.exists();
         if fresh {
-            if let Err(e) = initialise_prefix(emu, prefix) {
-                // Not fatal: Wine will create the prefix itself, the
-                // links will be there, and the UI will say so.
+            if let Err(e) = initialise_prefix(runtime, emu, prefix) {
+                // Not fatal: the runtime will create the prefix
+                // itself, the links will be there, and the UI will say
+                // so.
                 eprintln!("could not prepare {}: {e}", prefix.display());
             }
         }
@@ -554,7 +658,9 @@ fn launch_blocking(
             watching = crate::prefix_migrate::snapshot(prefix);
         }
 
-        command.env("WINEPREFIX", prefix);
+        for (key, value) in runtime_env(runtime, emu, prefix) {
+            command.env(key, value);
+        }
     }
 
     // Detached: the emulator's lifetime isn't tied to this app, so
@@ -563,7 +669,7 @@ fn launch_blocking(
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
 
-    supervise(app, child, game_id, prefix, watching);
+    supervise(app, child, game_id, prefix, runtime, watching);
     Ok(())
 }
 
@@ -968,6 +1074,123 @@ mod tests {
         assert_eq!(
             shell_quote(&["/games/Moth & Ember/it's.exe".to_string()]),
             r#"'/games/Moth & Ember/it'\''s.exe'"#
+        );
+    }
+
+    /// An emulator row as Settings would hand one over.
+    fn emu(command: &str, runtime: &str, proton_path: &str) -> EmulatorConfig {
+        EmulatorConfig {
+            command: command.to_string(),
+            args_prefix: vec![],
+            version_flag: "--version".to_string(),
+            runtime: runtime.to_string(),
+            proton_path: proton_path.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_unset_or_unknown_runtime_is_wine() {
+        assert_eq!(Runtime::of(&emu("wine", "", "")), Runtime::Wine);
+        assert_eq!(Runtime::of(&emu("wine", "wine", "")), Runtime::Wine);
+        // A runtime some later build might add: launch it through what
+        // this build has rather than not at all.
+        assert_eq!(Runtime::of(&emu("wine", "hangover", "")), Runtime::Wine);
+    }
+
+    #[test]
+    fn proton_is_recognised_however_it_is_capitalised() {
+        assert_eq!(Runtime::of(&emu("umu-run", "proton", "")), Runtime::Proton);
+        assert_eq!(Runtime::of(&emu("umu-run", "Proton", "")), Runtime::Proton);
+    }
+
+    #[test]
+    fn both_runtimes_are_pointed_at_the_same_prefix() {
+        let prefix = Path::new("/games/.wine-prefixes/Ferrofluid");
+        let wine = runtime_env(Runtime::Wine, &emu("wine", "wine", ""), prefix);
+        let proton = runtime_env(Runtime::Proton, &emu("umu-run", "proton", ""), prefix);
+
+        // The layout inside the prefix is what the save sync and the
+        // prefix migration are built on, so this is the load-bearing
+        // assertion of the whole feature: umu takes WINEPREFIX too.
+        let expected = (
+            "WINEPREFIX".to_string(),
+            "/games/.wine-prefixes/Ferrofluid".to_string(),
+        );
+        assert_eq!(wine, vec![expected.clone()]);
+        assert_eq!(proton, vec![expected]);
+    }
+
+    #[test]
+    fn a_configured_proton_build_is_passed_through_as_protonpath() {
+        let env = runtime_env(
+            Runtime::Proton,
+            &emu("umu-run", "proton", "  GE-Proton  "),
+            Path::new("/games/pfx"),
+        );
+        assert_eq!(
+            env,
+            vec![
+                ("WINEPREFIX".to_string(), "/games/pfx".to_string()),
+                ("PROTONPATH".to_string(), "GE-Proton".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_proton_build_configured_for_wine_is_not_sent_to_wine() {
+        let env = runtime_env(
+            Runtime::Wine,
+            &emu("wine", "wine", "GE-Proton"),
+            Path::new("/games/pfx"),
+        );
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, "WINEPREFIX");
+    }
+
+    #[test]
+    fn each_runtime_creates_a_prefix_its_own_way() {
+        assert_eq!(
+            prefix_init_args(Runtime::Wine, &emu("wine", "wine", "")),
+            vec!["wineboot", "-i"]
+        );
+        assert_eq!(
+            prefix_init_args(Runtime::Proton, &emu("umu-run", "proton", "")),
+            vec!["createprefix"]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_command_keeps_its_own_arguments_first() {
+        let mut flatpak = emu("flatpak", "wine", "");
+        flatpak.args_prefix = vec!["run".into(), "org.winehq.Wine".into(), "--".into()];
+        assert_eq!(
+            prefix_init_args(Runtime::Wine, &flatpak),
+            vec!["run", "org.winehq.Wine", "--", "wineboot", "-i"]
+        );
+    }
+
+    #[test]
+    fn a_relative_prefix_root_is_resolved_before_it_reaches_the_runtime() {
+        // umu refuses a WINEPREFIX that isn't absolute, so a relative
+        // install root must not survive this far.
+        let settings = Settings {
+            install_root: "games".to_string(),
+            ..Settings::default()
+        };
+        let prefix = prefix_dir(&settings, "PC", "PC/Ferrofluid").unwrap();
+        assert!(prefix.is_absolute(), "{} is not absolute", prefix.display());
+        assert!(prefix.ends_with("games/.wine-prefixes/Ferrofluid"));
+    }
+
+    #[test]
+    fn an_absolute_prefix_root_is_left_exactly_as_it_was_typed() {
+        let settings = Settings {
+            prefix_root: "/mnt/slow/prefixes".to_string(),
+            ..Settings::default()
+        };
+        assert_eq!(
+            prefix_dir(&settings, "PC", "PC/Ferrofluid").unwrap(),
+            PathBuf::from("/mnt/slow/prefixes/Ferrofluid")
         );
     }
 }

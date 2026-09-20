@@ -28,11 +28,31 @@ use tauri::{AppHandle, Manager};
 /// `version_flag` is used by the dependency check for native binaries
 /// only — ignored for Flatpaks, which are checked via `flatpak info`
 /// instead (see dependencies.rs).
+///
+/// `runtime` only means anything for PC: `"wine"` launches through
+/// Wine, `"proton"` through umu-launcher's `umu-run`, which needs
+/// different environment variables and a different way of creating the
+/// prefix and of knowing the session has ended. It is a string rather
+/// than an enum so that a settings.json naming a runtime this build
+/// doesn't know still loads — launcher.rs treats anything it doesn't
+/// recognise as Wine.
+///
+/// `proton_path` is umu's `PROTONPATH`: empty lets umu pick and
+/// download its own build, `"GE-Proton"` asks for the latest GE build,
+/// and a full path uses a Proton already on disk — including one
+/// Steam installed, which is the only sense in which Steam is involved
+/// at all.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct EmulatorConfig {
     pub command: String,
     pub args_prefix: Vec<String>,
     pub version_flag: String,
+    /// Defaulted, so every settings.json written before Proton existed
+    /// here still loads and still means Wine.
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
+    #[serde(default)]
+    pub proton_path: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -128,6 +148,13 @@ fn default_sort() -> String {
     "alpha".to_string()
 }
 
+/// Wine, for every platform and for every settings.json that predates
+/// the choice existing. Proton is opt-in per platform, and in practice
+/// only PC has anything to opt in with.
+fn default_runtime() -> String {
+    "wine".to_string()
+}
+
 fn default_device_name() -> String {
     std::fs::read_to_string("/etc/hostname")
         .ok()
@@ -159,6 +186,8 @@ fn default_emulators() -> HashMap<String, EmulatorConfig> {
             command: "duckstation-qt".to_string(),
             args_prefix: vec![],
             version_flag: "-version".to_string(),
+            runtime: default_runtime(),
+            proton_path: String::new(),
         },
     );
     m.insert(
@@ -167,6 +196,8 @@ fn default_emulators() -> HashMap<String, EmulatorConfig> {
             command: "pcsx2-qt".to_string(),
             args_prefix: vec![],
             version_flag: "--version".to_string(),
+            runtime: default_runtime(),
+            proton_path: String::new(),
         },
     );
     m.insert(
@@ -175,6 +206,8 @@ fn default_emulators() -> HashMap<String, EmulatorConfig> {
             command: "wine".to_string(),
             args_prefix: vec![],
             version_flag: "--version".to_string(),
+            runtime: default_runtime(),
+            proton_path: String::new(),
         },
     );
     m.insert(
@@ -183,6 +216,8 @@ fn default_emulators() -> HashMap<String, EmulatorConfig> {
             command: "/path/to/Eden.AppImage".to_string(),
             args_prefix: vec![],
             version_flag: "--version".to_string(),
+            runtime: default_runtime(),
+            proton_path: String::new(),
         },
     );
     m
@@ -262,6 +297,41 @@ mod tests {
         assert!(settings.save_sync.enabled, "should pick up the new default");
         assert!(settings.launch_overrides.is_empty());
         assert!(settings.prefix_root.is_empty());
+    }
+
+    #[test]
+    fn an_emulator_row_written_before_proton_existed_still_loads_as_wine() {
+        // The whole point of the two defaulted fields: a settings.json
+        // from before the runtime choice existed must keep launching
+        // games exactly as it did, not be discarded for missing them.
+        let stored = r#"{
+            "server_base": "", "install_root": "", "sound_enabled": true,
+            "emulators": {
+                "PC": { "command": "wine", "args_prefix": [], "version_flag": "--version" }
+            }
+        }"#;
+        let settings: Settings = serde_json::from_str(stored).unwrap();
+        let pc = &settings.emulators["PC"];
+        assert_eq!(pc.command, "wine");
+        assert_eq!(pc.runtime, "wine");
+        assert!(pc.proton_path.is_empty());
+    }
+
+    #[test]
+    fn a_stored_proton_row_keeps_its_runtime_and_build() {
+        let stored = r#"{
+            "server_base": "", "install_root": "", "sound_enabled": true,
+            "emulators": {
+                "PC": {
+                    "command": "umu-run", "args_prefix": [], "version_flag": "--version",
+                    "runtime": "proton", "proton_path": "GE-Proton"
+                }
+            }
+        }"#;
+        let settings: Settings = serde_json::from_str(stored).unwrap();
+        let pc = &settings.emulators["PC"];
+        assert_eq!(pc.runtime, "proton");
+        assert_eq!(pc.proton_path, "GE-Proton");
     }
 
     #[test]
