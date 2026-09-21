@@ -27,6 +27,7 @@ fn main() {
             server::rescan_library,
             dependencies::check_dependency,
             install_state::get_install_states,
+            install_state::install_root_space,
             install_state::install_game,
             install_state::uninstall_game,
             install_state::cancel_install,

@@ -457,10 +457,12 @@ pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<
     }
     let (_, title) = game_id.split_once('/')?;
     let root = if settings.prefix_root.trim().is_empty() {
-        if settings.install_root.trim().is_empty() {
-            return None;
-        }
-        Path::new(&settings.install_root).join(".wine-prefixes")
+        // The first install directory, even when there are several: a
+        // prefix *is* the game's save data, so moving one when the
+        // list of drives changes would lose saves. It stays where it
+        // was made, and `prefix_root` exists for anyone who wants it
+        // somewhere else entirely.
+        settings.roots().first()?.join(".wine-prefixes")
     } else {
         PathBuf::from(&settings.prefix_root)
     };

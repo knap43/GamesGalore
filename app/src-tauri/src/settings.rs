@@ -58,7 +58,21 @@ pub struct EmulatorConfig {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Settings {
     pub server_base: String,
+    /// The first install directory, and the one prefixes live beside.
+    /// Kept in step with the head of `install_roots` by
+    /// `save_settings`, so there is exactly one answer to "where do
+    /// games go by default" however old the file is.
     pub install_root: String,
+    /// Every directory games may be installed into. Empty means "just
+    /// `install_root`", which is what every settings.json written
+    /// before multiple drives existed says, so those keep working
+    /// untouched.
+    ///
+    /// Installs are placed by `install_state::choose_root`: a title
+    /// already on one of these drives stays there, and a new one goes
+    /// wherever there is the most room.
+    #[serde(default)]
+    pub install_roots: Vec<String>,
     pub sound_enabled: bool,
     #[serde(default = "default_emulators")]
     pub emulators: HashMap<String, EmulatorConfig>,
@@ -228,6 +242,7 @@ impl Default for Settings {
         Self {
             server_base: String::new(),
             install_root: String::new(),
+            install_roots: Vec::new(),
             sound_enabled: true,
             emulators: default_emulators(),
             launch_overrides: HashMap::new(),
@@ -236,6 +251,38 @@ impl Default for Settings {
             sort: default_sort(),
             rawg_key: String::new(),
         }
+    }
+}
+
+impl Settings {
+    /// Every install directory, in the order they were configured and
+    /// without the blanks and duplicates a hand-edited list collects.
+    ///
+    /// One list for the whole app to read, so nothing has to care
+    /// whether a settings.json predates multiple drives: an older one
+    /// has `install_roots` empty and answers with its single
+    /// `install_root`, a newer one answers with the list, and a
+    /// configuration with nothing set at all answers with nothing —
+    /// which is the state the UI already refuses to install from.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        let listed: Vec<&str> = if self.install_roots.is_empty() {
+            vec![self.install_root.as_str()]
+        } else {
+            self.install_roots.iter().map(|r| r.as_str()).collect()
+        };
+
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for root in listed {
+            let root = root.trim();
+            if root.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(root);
+            if !roots.contains(&path) {
+                roots.push(path);
+            }
+        }
+        roots
     }
 }
 
@@ -258,7 +305,16 @@ pub fn get_settings(app: AppHandle) -> Settings {
 }
 
 #[tauri::command]
-pub fn save_settings(app: AppHandle, settings: Settings) -> Result<(), String> {
+pub fn save_settings(app: AppHandle, mut settings: Settings) -> Result<(), String> {
+    // The two fields are one fact stored twice — the list, and its
+    // head — so the invariant is enforced here rather than trusted to
+    // every caller. It matters for the Wine prefixes, which live
+    // beside the first directory and must not wander when the list is
+    // reordered from somewhere other than the settings screen.
+    if let Some(first) = settings.roots().first() {
+        settings.install_root = first.to_string_lossy().to_string();
+    }
+
     let path = settings_file(&app)?;
     let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
     fs::write(path, json).map_err(|e| e.to_string())
@@ -332,6 +388,44 @@ mod tests {
         let pc = &settings.emulators["PC"];
         assert_eq!(pc.runtime, "proton");
         assert_eq!(pc.proton_path, "GE-Proton");
+    }
+
+    #[test]
+    fn one_install_directory_reads_as_a_list_of_one() {
+        // Every settings.json written before multiple drives existed.
+        let stored = r#"{
+            "server_base": "", "install_root": "/games", "sound_enabled": true
+        }"#;
+        let settings: Settings = serde_json::from_str(stored).unwrap();
+        assert_eq!(settings.roots(), vec![PathBuf::from("/games")]);
+    }
+
+    #[test]
+    fn the_list_is_taken_in_order_without_its_blanks_and_repeats() {
+        let settings = Settings {
+            install_root: "/games".to_string(),
+            install_roots: vec![
+                "/games".to_string(),
+                "  ".to_string(),
+                "/mnt/slow".to_string(),
+                "/games".to_string(),
+            ],
+            ..Settings::default()
+        };
+        assert_eq!(
+            settings.roots(),
+            vec![PathBuf::from("/games"), PathBuf::from("/mnt/slow")]
+        );
+    }
+
+    #[test]
+    fn nothing_configured_is_no_drives_rather_than_one_called_nothing() {
+        assert!(Settings::default().roots().is_empty());
+        let blank = Settings {
+            install_root: "   ".to_string(),
+            ..Settings::default()
+        };
+        assert!(blank.roots().is_empty());
     }
 
     #[test]

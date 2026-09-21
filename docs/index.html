@@ -263,6 +263,10 @@
     color: var(--text-primary);
   }
 
+  .install-root-row + .install-root-row { margin-top: 10px; }
+  .install-root-space { margin-top: 4px; margin-bottom: 0; }
+  #add-install-root { margin-top: 10px; }
+
   .emulator-row {
     padding: 12px;
     border-radius: 8px;
@@ -1249,12 +1253,15 @@
       </div>
 
       <div class="setting-block">
-        <label class="setting-label" for="install-root-input">Install directory</label>
-        <div class="setting-desc">Where downloaded games are stored on this machine.</div>
-        <div class="setting-input-row">
-          <input class="setting-input" id="install-root-input" type="text" placeholder="/home/you/Games" autocomplete="off">
-          <button class="browse-button" id="browse-install-root" type="button">Browse…</button>
+        <label class="setting-label" for="install-root-input">Install directories</label>
+        <div class="setting-desc">
+          Where downloaded games are stored on this machine. Add a second directory — on another
+          drive — and the library spreads across both: a game already on a drive stays there, and
+          a new one goes wherever there is the most room. The first directory is also where Wine
+          prefixes live, so PC saves stay put when the rest of the list changes.
         </div>
+        <div id="install-root-rows"></div>
+        <button class="browse-button" id="add-install-root" type="button">Add another drive</button>
       </div>
 
       <div class="setting-block">
@@ -1858,17 +1865,18 @@ function installGame(game) {
     simulateDemoInstall(game);
     return;
   }
-  if (!state.serverBase || !state.installRoot) {
-    alert('Set the library server address and install directory in Settings first.');
+  if (!state.serverBase || !state.installRoots.length) {
+    alert('Set the library server address and an install directory in Settings first.');
     return;
   }
   // Progress arrives via the "install:status" listener above, not the
   // resolution of this promise — this can take a long time for a large
   // game, and the UI shouldn't sit frozen waiting on it.
+  // Which drive it lands on is decided in the backend, which is the
+  // only side that knows how much room each one has.
   TAURI.core.invoke('install_game', {
     game,
     serverBase: state.serverBase,
-    installRoot: state.installRoot,
   }).catch(err => console.error('install failed', err));
 }
 
@@ -1939,7 +1947,7 @@ function cancelInstall(game) {
   // app was closed mid-download last session and this game has read
   // "Downloading..." ever since with nothing actually running anymore.
   // Same command, same server-side cleanup either way.
-  TAURI.core.invoke('cancel_install', { gameId: game.id, installRoot: state.installRoot })
+  TAURI.core.invoke('cancel_install', { gameId: game.id })
     .catch(err => console.error('cancel failed', err));
 }
 
@@ -2465,6 +2473,8 @@ let state = {
   soundEnabled: true,
   serverBase: '',
   installRoot: '',
+  installRoots: [],
+  rootSpace: [],
   launchOverrides: {}, // game id -> path, relative to that game's install dir
   prefixRoot: '',
   // Mirrors SaveSyncConfig::default() in settings.rs — on, and
@@ -2509,7 +2519,12 @@ async function loadSettings() {
   const s = await TAURI.core.invoke('get_settings');
   state.soundEnabled = s.sound_enabled;
   state.serverBase = s.server_base;
-  state.installRoot = s.install_root;
+  // An older settings.json has one directory and no list; a newer one
+  // has both. Either way the UI works on the list alone.
+  state.installRoots = (s.install_roots && s.install_roots.length)
+    ? s.install_roots.slice()
+    : (s.install_root ? [s.install_root] : []);
+  state.installRoot = state.installRoots[0] || '';
   state.emulators = s.emulators;
   state.launchOverrides = s.launch_overrides || {};
   state.prefixRoot = s.prefix_root || '';
@@ -2524,7 +2539,8 @@ async function loadSettings() {
   updateSaveSyncUI();
   renderSwitchSavesStatus();
   document.getElementById('server-base-input').value = s.server_base;
-  document.getElementById('install-root-input').value = s.install_root;
+  renderInstallRoots();
+  refreshRootSpace();
   updateSoundToggleUI();
   renderEmulatorRows();
 }
@@ -2535,6 +2551,7 @@ async function persistSettings() {
     settings: {
       server_base: state.serverBase,
       install_root: state.installRoot,
+      install_roots: state.installRoots,
       sound_enabled: state.soundEnabled,
       emulators: state.emulators,
       launch_overrides: state.launchOverrides,
@@ -3127,6 +3144,13 @@ function detailMetaHTML(game) {
     segs.push(`<span>${game.players === 1 ? '1 player' : `up to ${game.players} players`}</span>`);
   }
   if (typeof game.hours === 'number') segs.push(`<span>${game.hours}h played</span>`);
+  // Which drive it went to, once there is more than one to have gone
+  // to. With a single install directory this is the same answer for
+  // every game in the library and worth nobody's attention.
+  if (state.installRoots.length > 1 && game.localDir) {
+    const drive = state.installRoots.find(root => game.localDir.startsWith(root));
+    if (drive) segs.push(`<span>on ${drive}</span>`);
+  }
   return segs.join('<span class="dot-sep"></span>');
 }
 
@@ -3600,12 +3624,6 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  const browseBtn = e.target.closest('#browse-install-root');
-  if (browseBtn) {
-    browseForInstallRoot();
-    return;
-  }
-
   if (e.target.closest('#browse-switch-data-dir')) {
     browseForSwitchDataDir();
     return;
@@ -3731,9 +3749,108 @@ document.getElementById('server-base-input').addEventListener('change', (e) => {
   persistSettings();
 });
 
-document.getElementById('install-root-input').addEventListener('change', (e) => {
-  state.installRoot = e.target.value.trim();
+/* The list of drives. Rows are re-rendered wholesale rather than
+   patched, so the handlers are delegated to the container and work off
+   the row's index rather than off any element identity. */
+function renderInstallRoots() {
+  const rows = document.getElementById('install-root-rows');
+  const roots = state.installRoots.length ? state.installRoots : [''];
+  rows.innerHTML = roots.map((root, i) => `
+    <div class="install-root-row" data-index="${i}">
+      <div class="setting-input-row">
+        <input class="setting-input"${i === 0 ? ' id="install-root-input"' : ''} type="text"
+               placeholder="${i === 0 ? '/home/you/Games' : 'Another drive, e.g. /mnt/games'}"
+               autocomplete="off" aria-label="Install directory ${i + 1}" value="${root}">
+        <button class="browse-button" type="button" data-browse-root="${i}">Browse…</button>
+        ${roots.length > 1 ? `<button class="browse-button" type="button" data-remove-root="${i}">Remove</button>` : ''}
+      </div>
+      <div class="setting-desc install-root-space" data-space="${i}"></div>
+    </div>`).join('');
+  renderRootSpace();
+}
+
+/* How much room each drive has, which is the number that matters when
+   the reason for a second drive is that the first one is full. */
+function renderRootSpace() {
+  document.querySelectorAll('#install-root-rows [data-space]').forEach(el => {
+    const root = state.installRoots[Number(el.dataset.space)];
+    const found = (state.rootSpace || []).find(s => s.path === root);
+    if (!root || !found) { el.textContent = ''; return; }
+    if (found.available_text === null || found.available_text === undefined) {
+      el.textContent = 'Could not be read — is the drive mounted?';
+    } else if (!found.exists) {
+      el.textContent = `${found.available_text} free — this directory will be created on the first install`;
+    } else {
+      el.textContent = `${found.available_text} free`;
+    }
+  });
+}
+
+async function refreshRootSpace() {
+  if (!TAURI) return;
+  try {
+    state.rootSpace = (await TAURI.core.invoke('install_root_space')) || [];
+  } catch (err) {
+    // Not knowing how full a drive is doesn't stop anything working,
+    // and an install that won't fit still says so when it's tried.
+    console.error('failed to read free space', err);
+    state.rootSpace = [];
+  }
+  renderRootSpace();
+}
+
+/* Empty rows are dropped rather than stored: a blank line in the list
+   would be a drive at the filesystem root, which is nobody's
+   intention. The first surviving entry is the primary one. */
+function commitInstallRoots(roots) {
+  state.installRoots = roots.map(r => r.trim()).filter(Boolean);
+  state.installRoot = state.installRoots[0] || '';
   persistSettings();
+  renderInstallRoots();
+  refreshRootSpace();
+}
+
+document.getElementById('install-root-rows').addEventListener('change', (e) => {
+  const input = e.target.closest('.setting-input');
+  if (!input) return;
+  const index = Number(input.closest('.install-root-row').dataset.index);
+  const roots = state.installRoots.length ? state.installRoots.slice() : [''];
+  roots[index] = input.value;
+  commitInstallRoots(roots);
+});
+
+document.getElementById('install-root-rows').addEventListener('click', async (e) => {
+  const remove = e.target.closest('[data-remove-root]');
+  if (remove) {
+    const roots = state.installRoots.slice();
+    roots.splice(Number(remove.dataset.removeRoot), 1);
+    // Removing a drive from the list leaves every game on it exactly
+    // where it is; it just stops being offered for new installs.
+    commitInstallRoots(roots);
+    return;
+  }
+  const browse = e.target.closest('[data-browse-root]');
+  if (!browse) return;
+  const selected = await browseForFolder();
+  if (!selected) return;
+  const roots = state.installRoots.length ? state.installRoots.slice() : [''];
+  roots[Number(browse.dataset.browseRoot)] = selected;
+  commitInstallRoots(roots);
+});
+
+document.getElementById('add-install-root').addEventListener('click', async () => {
+  const selected = await browseForFolder();
+  if (selected) {
+    commitInstallRoots(state.installRoots.concat(selected));
+    return;
+  }
+  // No native picker (browser preview) or the dialog was cancelled:
+  // offer an empty row to type into rather than doing nothing.
+  if (state.installRoots.every(Boolean)) {
+    state.installRoots = state.installRoots.concat('');
+    renderInstallRoots();
+    document.querySelector('.install-root-row:last-child .setting-input').focus();
+  }
 });
 
 /* Opens the native folder picker and returns the chosen path, or null
@@ -3748,14 +3865,6 @@ async function browseForFolder() {
   return await TAURI.core.invoke('plugin:dialog|open', {
     options: { directory: true, multiple: false },
   });
-}
-
-async function browseForInstallRoot() {
-  const selected = await browseForFolder();
-  if (!selected) return;
-  state.installRoot = selected;
-  document.getElementById('install-root-input').value = selected;
-  persistSettings();
 }
 
 async function browseForSwitchDataDir() {

@@ -23,7 +23,7 @@ npm run check:demo   # fail if it is out of date (CI runs this)
 | `metadata.test.js` | The optional `game.json`: genre on cards and in the detail header, the genre filter, and a library with no metadata at all. |
 | `picker.test.js` | The launch picker — when it appears, the order it offers executables in, what it passes to `launch_game`, persistence of a choice, and its place in the keyboard chain. |
 | `saves.test.js` | Cloud saves — sync before launch, upload after exit, the conflict prompt, and Title ID resolution from filenames, archives and a watched session. |
-| `settings.test.js` | Settings under keyboard and gamepad control: every control reachable, nothing hidden or disabled focused, both ends of the form, Escape from a field committing before it closes, and the PC runtime switch between Wine and Proton. |
+| `settings.test.js` | Settings under keyboard and gamepad control: every control reachable, nothing hidden or disabled focused, both ends of the form, Escape from a field committing before it closes, the list of install drives, and the PC runtime switch between Wine and Proton. |
 | `demo.test.js` | The published demo in `docs/`: that it still works with no Tauri runtime at all, and that it carries every element id the app does (the drift guard for a file kept in step by hand). |
 
 `harness.js` holds everything jsdom doesn't implement and the app

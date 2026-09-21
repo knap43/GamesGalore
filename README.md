@@ -89,7 +89,9 @@ The package above avoids the question entirely.
 #### First run
 
 Open Settings (the gear at the bottom of the sidebar) and fill in the library
-server's address — `http://<that machine>:8420` — and an install directory.
+server's address — `http://<that machine>:8420` — and an install directory. More
+than one directory can be added when one drive runs out: games already installed
+stay where they are, and new ones go to whichever drive has the most room.
 Nothing works until those two are set. Emulator commands for each platform have
 sensible defaults and are worth checking if you use Flatpaks. PC titles run
 through Wine by default and can be switched to Proton in the same row, which
