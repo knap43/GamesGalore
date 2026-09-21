@@ -787,10 +787,12 @@ pub async fn upload_save(
             response.status()
         ));
     }
-    response
+    let version = response
         .json::<SaveVersion>()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::log_line!("uploaded the save for {game_id} as {}", version.version);
+    Ok(version)
 }
 
 /// Replaces local save data with a stored version. The existing local

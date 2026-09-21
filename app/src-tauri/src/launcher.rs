@@ -533,7 +533,7 @@ fn supervise(
         if !watching.is_empty() {
             let migrated = crate::prefix_migrate::migrate_after_session(&watching, session_began);
             if !migrated.moved.is_empty() {
-                eprintln!("brought {} into the prefix", migrated.moved.join(", "));
+                crate::log_line!("brought {} into the prefix", migrated.moved.join(", "));
                 let _ = app.emit("prefix:saves-moved", (&game_id, &migrated));
             }
         }
@@ -607,7 +607,7 @@ fn launch_blocking(
     let mut args = emu.args_prefix.clone();
     args.extend(platform_args(&platform, &file_str));
 
-    eprintln!("launch_game: {} {}", emu.command, shell_quote(&args));
+    crate::log_line!("launch_game: {} {}", emu.command, shell_quote(&args));
 
     let mut command = Command::new(&emu.command);
     command.args(&args);
@@ -642,13 +642,13 @@ fn launch_blocking(
                 // Not fatal: the runtime will create the prefix
                 // itself, the links will be there, and the UI will say
                 // so.
-                eprintln!("could not prepare {}: {e}", prefix.display());
+                crate::log_line!("could not prepare {}: {e}", prefix.display());
             }
         }
 
         let isolated = isolate_profile_links(prefix, fresh);
         if !isolated.is_empty() {
-            eprintln!("kept {} inside {}", isolated.join(", "), prefix.display());
+            crate::log_line!("kept {} inside {}", isolated.join(", "), prefix.display());
         }
 
         // Anything still linked out belongs to a prefix that predates

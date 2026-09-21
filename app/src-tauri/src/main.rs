@@ -2,6 +2,7 @@ mod catalog_cache;
 mod dependencies;
 mod install_state;
 mod launcher;
+mod logs;
 mod migrate;
 mod playtime;
 mod prefix_migrate;
@@ -16,6 +17,8 @@ fn main() {
         // so a user whose data still sits under the old identifier
         // doesn't briefly look like a user with no data at all.
         .setup(|app| {
+            // First, so everything below has somewhere to report to.
+            logs::attach(app.handle());
             migrate::move_legacy_app_data(app.handle());
             Ok(())
         })
@@ -33,6 +36,7 @@ fn main() {
             install_state::cancel_install,
             launcher::launch_game,
             launcher::list_launch_candidates,
+            logs::get_logs,
             playtime::get_playtime,
             saves::save_status,
             saves::upload_save,

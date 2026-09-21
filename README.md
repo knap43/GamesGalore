@@ -30,9 +30,10 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Edit `config.py`: point `LIBRARY_ROOT` at the mount holding the games, and set
-`SAVE_ROOT` to somewhere you actually back up — it holds the only copy of your
-cloud saves. Then:
+Edit `config.py`: point `LIBRARY_ROOTS` at the mount holding the games — it is a
+list, so a second drive is one more line when the first fills up — and set
+`SAVE_ROOT` to somewhere you actually back up, since it holds the only copy of
+your cloud saves. Then:
 
 ```sh
 .venv/bin/python server.py          # http://0.0.0.0:8420
@@ -91,7 +92,12 @@ The package above avoids the question entirely.
 Open Settings (the gear at the bottom of the sidebar) and fill in the library
 server's address — `http://<that machine>:8420` — and an install directory. More
 than one directory can be added when one drive runs out: games already installed
-stay where they are, and new ones go to whichever drive has the most room.
+stay where they are, and new ones go to whichever drive has the most room. The
+library server takes a list of drives too, in its own `config.py`.
+
+Settings also has a **View logs** button, which shows what this session has
+printed — the command each game was launched with, where each install went, and
+anything that went wrong — whether or not the app was started from a terminal.
 Nothing works until those two are set. Emulator commands for each platform have
 sensible defaults and are worth checking if you use Flatpaks. PC titles run
 through Wine by default and can be switched to Proton in the same row, which

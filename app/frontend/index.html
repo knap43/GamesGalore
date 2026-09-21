@@ -175,6 +175,29 @@
     padding: 22px 24px;
     box-shadow: 0 30px 60px -20px rgba(0,0,0,0.6);
   }
+  /* Wider than Settings and fixed in height: log lines are long, and
+     a window that grew and shrank as lines arrived would be unusable
+     while anything was actually happening. */
+  .logs-modal { max-width: 860px; }
+  .logs-actions { display: flex; align-items: center; gap: 10px; }
+  .logs-output {
+    height: 60vh;
+    overflow-y: auto;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--bg-void);
+    border: 1px solid var(--border-hair);
+    font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .logs-output:focus-visible { outline: none; border-color: var(--accent-pink); }
+  .log-line { color: var(--text-muted); }
+  .log-time { color: var(--text-faint); margin-right: 10px; }
+  .logs-empty { color: var(--text-faint); }
+
   .modal-header {
     display: flex;
     align-items: center;
@@ -1352,9 +1375,10 @@
             <span class="dependency-status" data-status>Not checked</span>
           </div>
           <div class="emulator-fields-row">
-            <span class="setting-desc" style="margin:0;">Checks whether the server itself has <code>nsz</code> available for Switch conversions.</span>
+            <span class="setting-desc" style="margin:0;">Checks whether the server itself has <code>nsz</code> available for Switch conversions, and how much room is left on its library drives.</span>
             <button class="browse-button emu-check" type="button" data-check="server-nsz">Check</button>
           </div>
+          <div class="setting-desc" id="server-library-roots" style="margin:8px 0 0;"></div>
         </div>
       </div>
 
@@ -1367,6 +1391,32 @@
           <span class="toggle-knob"></span>
         </button>
       </div>
+
+      <div class="setting-block">
+        <label class="setting-label">Logs</label>
+        <div class="setting-desc">
+          What this session has printed — the command each game was launched with, where each
+          install went, and anything that went wrong. The same lines the terminal would show,
+          kept whether or not there is a terminal to show them.
+        </div>
+        <button class="browse-button" id="view-logs" type="button">View logs</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= LOGS ================= -->
+  <div class="modal-backdrop" id="logs-backdrop" style="display:none">
+    <div class="modal logs-modal" role="dialog" aria-label="Logs">
+      <div class="modal-header">
+        <h2>Logs</h2>
+        <div class="logs-actions">
+          <button class="browse-button" id="logs-copy" type="button">Copy</button>
+          <button class="modal-close" id="logs-close" aria-label="Close logs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      </div>
+      <div class="logs-output" id="logs-output" tabindex="0" role="log" aria-live="polite" aria-label="Session output"></div>
     </div>
   </div>
 
@@ -1751,6 +1801,10 @@ function applyPlaytime(game, entry) {
    restart. */
 function setupPlaytimeListener() {
   if (!TAURI) return;
+  TAURI.event.listen('log:line', (event) => {
+    appendLogLine(event.payload);
+  });
+
   TAURI.event.listen('playtime:changed', (event) => {
     const [id, entry] = event.payload;
     const game = GAMES.find(g => g.id === id);
@@ -2607,9 +2661,137 @@ async function checkServerNsz() {
     const result = await TAURI.core.invoke('fetch_server_status', { serverBase: state.serverBase });
     statusEl.textContent = result.nsz_found ? (result.nsz_version ? `Found · ${result.nsz_version}` : 'Found') : 'Not found on server';
     statusEl.className = `dependency-status ${result.nsz_found ? 'found' : 'missing'}`;
+    renderServerLibraryRoots(result.library_roots);
   } catch (err) {
     statusEl.textContent = 'Server unreachable';
     statusEl.className = 'dependency-status missing';
+    renderServerLibraryRoots(null);
+  }
+}
+
+/* The server's own drives, as it reports them. The library lives on
+   that machine's disks, so "nearly full" is a fact only it knows —
+   and finding it out by sshing in is exactly what this saves. */
+function renderServerLibraryRoots(roots) {
+  const el = document.getElementById('server-library-roots');
+  if (!roots || !roots.length) { el.innerHTML = ''; return; }
+  el.innerHTML = roots.map(root => {
+    if (!root.exists) return `<div><code>${root.path}</code> — not mounted on the server</div>`;
+    const games = root.games === 1 ? '1 game' : `${root.games} games`;
+    const free = root.free_text ? `${root.free_text} free` : 'free space unknown';
+    return `<div><code>${root.path}</code> — ${games}, ${free}</div>`;
+  }).join('');
+}
+
+/* ---------------------------------------------------------------
+ * LOGS
+ * ---------------------------------------------------------------
+ * What the app has printed this session, which used to go to a
+ * terminal that in normal use doesn't exist — started from the
+ * applications menu, stderr goes to the journal and nowhere anybody
+ * looks. The backend keeps the last few hundred lines and pushes each
+ * new one as it happens; this shows them live.
+ * --------------------------------------------------------------- */
+let logLines = [];
+
+function logTime(millis) {
+  const d = new Date(millis);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function renderLogs() {
+  const out = document.getElementById('logs-output');
+  if (!logLines.length) {
+    out.innerHTML = '<div class="logs-empty">Nothing yet this session. '
+      + 'Launching a game or installing one writes here.</div>';
+    return;
+  }
+  out.innerHTML = logLines.map(line =>
+    `<div class="log-line"><span class="log-time">${logTime(line.at)}</span>${escapeHTML(line.text)}</div>`
+  ).join('');
+}
+
+/* Appends without re-rendering the whole scrollback, and only follows
+   the tail when the view is already at the bottom — reading something
+   further up while a download logs away shouldn't yank the view. */
+function appendLogLine(line) {
+  logLines.push(line);
+  if (!isLogsOpen()) return;
+  const out = document.getElementById('logs-output');
+  const pinned = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  if (logLines.length === 1) {
+    renderLogs();
+  } else {
+    const el = document.createElement('div');
+    el.className = 'log-line';
+    el.innerHTML = `<span class="log-time">${logTime(line.at)}</span>${escapeHTML(line.text)}`;
+    out.appendChild(el);
+  }
+  if (pinned) out.scrollTop = out.scrollHeight;
+}
+
+async function openLogs() {
+  if (TAURI) {
+    try {
+      logLines = await TAURI.core.invoke('get_logs') || [];
+    } catch (err) {
+      console.error('failed to read the log', err);
+    }
+  }
+  renderLogs();
+  document.getElementById('logs-backdrop').style.display = 'flex';
+  const out = document.getElementById('logs-output');
+  out.scrollTop = out.scrollHeight;
+  focusNoScroll(document.getElementById('logs-close'));
+}
+
+function closeLogs() {
+  document.getElementById('logs-backdrop').style.display = 'none';
+  focusNoScroll(document.getElementById('view-logs'));
+}
+
+document.getElementById('view-logs').addEventListener('click', openLogs);
+document.getElementById('logs-close').addEventListener('click', closeLogs);
+document.getElementById('logs-backdrop').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('logs-backdrop')) closeLogs();
+});
+
+/* Copying the log is the point of having one to look at: it is what
+   gets pasted into a bug report. */
+document.getElementById('logs-copy').addEventListener('click', async () => {
+  const button = document.getElementById('logs-copy');
+  const text = logLines.map(l => `${logTime(l.at)} ${l.text}`).join('\n');
+  button.textContent = await copyToClipboard(text) ? 'Copied' : 'Could not copy';
+  setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+});
+
+/* The async clipboard API where it exists, and the old selection
+   trick where it doesn't — WebKitGTK is not always willing to hand
+   over navigator.clipboard, and a Copy button that silently does
+   nothing is worse than no button. */
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    console.error('failed to copy:', err.message);
+  }
+  try {
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand && document.execCommand('copy');
+    field.remove();
+    return !!copied;
+  } catch (err) {
+    console.error('failed to copy:', err.message);
+    return false;
   }
 }
 
@@ -3921,6 +4103,10 @@ function isSettingsOpen() {
   return document.getElementById('settings-backdrop').style.display !== 'none';
 }
 
+function isLogsOpen() {
+  return document.getElementById('logs-backdrop').style.display !== 'none';
+}
+
 function openSettings() {
   document.getElementById('settings-backdrop').style.display = 'flex';
   focusNoScroll(document.getElementById('settings-close'));
@@ -4047,6 +4233,12 @@ function goBack() {
   if (isLaunchMenuOpen()) {
     playBackSound();
     closeLaunchMenu();
+    return;
+  }
+  // Logs open on top of Settings, so they close first.
+  if (isLogsOpen()) {
+    playBackSound();
+    closeLogs();
     return;
   }
   if (isSettingsOpen()) {

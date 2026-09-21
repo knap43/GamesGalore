@@ -118,6 +118,16 @@ fn save_states(app: &AppHandle, states: &InstallMap) -> Result<(), String> {
 /// starting, finishing, failing, or being cleared. Progress within an
 /// install goes through emit_progress instead; see there for why.
 fn set_status(app: &AppHandle, id: &str, status: InstallStatus) -> Result<(), String> {
+    // The transitions worth a line in the log are the ones worth
+    // persisting, which is exactly the set that reaches here.
+    match &status {
+        InstallStatus::Installed { local_dir } => {
+            crate::log_line!("installed {id} in {}", local_dir.display())
+        }
+        InstallStatus::Failed { message } => crate::log_line!("install of {id} failed: {message}"),
+        _ => {}
+    }
+
     let mut states = load_states(app);
     states.insert(id.to_string(), status.clone());
     save_states(app, &states)?;
@@ -332,6 +342,7 @@ pub async fn install_game(app: AppHandle, game: Game, server_base: String) -> Re
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| e.to_string())?;
+    crate::log_line!("installing {} to {}", game.id, dest_dir.display());
 
     // Asked again of the directory that now exists, rather than of the
     // drive it sits on: a root can be a symlink onto another

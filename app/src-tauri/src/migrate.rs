@@ -30,7 +30,7 @@ pub fn move_legacy_app_data(app: &AppHandle) {
         // Nothing here is worth refusing to start over: the old
         // directory is still on disk to be moved by hand, and the app
         // works perfectly well from a fresh one.
-        eprintln!("could not move data from {}: {e}", legacy.display());
+        crate::log_line!("could not move data from {}: {e}", legacy.display());
     }
 }
 

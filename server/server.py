@@ -38,6 +38,7 @@ from typing import Optional
 import requests
 from flask import Flask, Response, abort, jsonify, request, send_file, url_for
 
+import config
 from config import (
     CACHE_DIR,
     CACHE_MAX_BYTES,
@@ -46,7 +47,6 @@ from config import (
     HOST,
     LEGACY_CACHE_DIR,
     LEGACY_SAVE_ROOT,
-    LIBRARY_ROOT,
     PORT,
     SAVE_ROOT,
     RAWG_API_KEY,
@@ -59,6 +59,7 @@ from metadata import MetadataError, RawgClient, fill_game_folder
 app = Flask(__name__)
 
 _catalog: dict = {}  # game id -> Game
+_game_dirs: dict = {}  # game id -> the directory it was found in
 _catalog_signature: Optional[tuple] = None  # what the tree looked like when it was scanned
 _catalog_scanned_at: float = 0.0
 
@@ -103,9 +104,57 @@ def migrate_legacy_state() -> None:
             print(f"moved {what} from {legacy} to {current}")
 
 
+def library_roots() -> list:
+    """
+    The drives the library lives on, in the order they are searched.
+
+    Read from the config module on every call rather than imported
+    once, so that a config.py written before there could be several —
+    one with only LIBRARY_ROOT in it — still works, and so the tests
+    can point the server at a temporary tree.
+    """
+    roots = getattr(config, "LIBRARY_ROOTS", None)
+    if not roots:
+        roots = [config.LIBRARY_ROOT]
+    return [Path(root) for root in roots]
+
+
 def _reload_catalog() -> None:
-    global _catalog, _catalog_signature, _catalog_scanned_at
-    _catalog = {g.id: g for g in scan_library(LIBRARY_ROOT)}
+    global _catalog, _game_dirs, _catalog_signature, _catalog_scanned_at
+
+    catalog: dict = {}
+    dirs: dict = {}
+    missing = []
+    for root in library_roots():
+        try:
+            found = scan_library(root)
+        except FileNotFoundError:
+            # A drive that isn't mounted right now shouldn't empty the
+            # catalog of the ones that are. It is still worth saying
+            # out loud, since a library that is quietly half its usual
+            # size is the kind of thing nobody notices.
+            missing.append(root)
+            print(f"library root is not there, skipping it: {root}")
+            continue
+        for game in found:
+            if game.id in catalog:
+                # First drive listed wins. A title being copied from
+                # one drive to another exists on both for as long as
+                # the copy takes; serving the established copy until
+                # the old one is deleted is the safe half of that.
+                continue
+            platform, title = game.id.split("/", 1)
+            catalog[game.id] = game
+            dirs[game.id] = root / platform / title
+
+    if missing and len(missing) == len(library_roots()):
+        # Every drive gone is a configuration problem rather than a
+        # library that happens to be empty, and it reads far better as
+        # the error it always was than as a server with no games.
+        raise FileNotFoundError(f"Library root does not exist: {missing[0]}")
+
+    _catalog = catalog
+    _game_dirs = dirs
     _catalog_signature = _library_signature()
     _catalog_scanned_at = time.time()
 
@@ -129,21 +178,24 @@ def _library_signature() -> tuple:
     for someone who knows they have just changed something.
     """
     entries = []
-    try:
-        platforms = sorted(LIBRARY_ROOT.iterdir())
-    except OSError:
-        return ()
-    for platform_dir in platforms:
-        if not platform_dir.is_dir():
-            continue
+    for root in library_roots():
         try:
-            entries.append((platform_dir.name, platform_dir.stat().st_mtime))
-            for game_dir in sorted(platform_dir.iterdir()):
-                if game_dir.is_dir():
-                    entries.append((f"{platform_dir.name}/{game_dir.name}",
-                                    game_dir.stat().st_mtime))
+            platforms = sorted(root.iterdir())
         except OSError:
+            # Counted as part of the shape: a drive appearing or going
+            # away is exactly the kind of change this exists to catch.
+            entries.append((str(root), None))
             continue
+        for platform_dir in platforms:
+            if not platform_dir.is_dir():
+                continue
+            try:
+                entries.append((str(platform_dir), platform_dir.stat().st_mtime))
+                for game_dir in sorted(platform_dir.iterdir()):
+                    if game_dir.is_dir():
+                        entries.append((str(game_dir), game_dir.stat().st_mtime))
+            except OSError:
+                continue
     return tuple(entries)
 
 
@@ -491,7 +543,56 @@ def status_route():
     if nsz_path:
         result = subprocess.run(["nsz", "--version"], capture_output=True, text=True)
         version = (result.stdout or result.stderr).strip()
-    return jsonify({"nsz_found": nsz_path is not None, "nsz_version": version})
+    return jsonify({
+        "nsz_found": nsz_path is not None,
+        "nsz_version": version,
+        "library_roots": _library_root_status(),
+    })
+
+
+def _library_root_status() -> list:
+    """
+    Each library drive, whether it is there, and how much room is left
+    on it.
+
+    Reported by the machine that actually has the disks: the client
+    can then say "the library server is nearly full" in the one place
+    someone would look, rather than that being something you find out
+    by sshing in.
+    """
+    _ensure_catalog()
+    status = []
+    for root in library_roots():
+        exists = root.is_dir()
+        free = None
+        if exists:
+            try:
+                free = shutil.disk_usage(root).free
+            except OSError:
+                free = None
+        status.append({
+            "path": str(root),
+            "exists": exists,
+            "free_bytes": free,
+            "free_text": _human_bytes(free) if free is not None else None,
+            "games": sum(1 for directory in _game_dirs.values()
+                         if directory.parent.parent == root),
+        })
+    return status
+
+
+def _human_bytes(count: int) -> str:
+    """Two significant figures and the unit a person would use."""
+    units = ["KB", "MB", "GB", "TB"]
+    if count < 1024:
+        return f"{count} bytes"
+    value = float(count)
+    unit = units[0]
+    for unit in units:
+        value /= 1024
+        if value < 1024:
+            break
+    return f"{value:.0f} {unit}" if value >= 10 else f"{value:.1f} {unit}"
 
 
 def _safe_segment(value: str) -> str:
@@ -636,11 +737,14 @@ def _prune_versions(directory: Path) -> None:
 
 
 def _resolve_game_dir(game_id: str) -> Path:
-    game = _catalog.get(game_id)
-    if game is None:
+    # Recorded when the catalog was built rather than recomputed here:
+    # with several drives, which one a title came from is a fact from
+    # the scan, and re-deriving it would have to guess the same order
+    # again.
+    directory = _game_dirs.get(game_id)
+    if directory is None:
         abort(404, "unknown game id")
-    platform, title = game_id.split("/", 1)
-    return LIBRARY_ROOT / platform / title
+    return directory
 
 
 def _safe_join(base: Path, filename: str) -> Path:

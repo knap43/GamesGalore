@@ -14,6 +14,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `catalog_cache.rs` | `installed-cache.json` beside it: the catalog entries for installed titles, so the shelf is on screen at launch without waiting on the server. See **Starting up before the server answers** below. |
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
+| `logs.rs` | The last few hundred lines this session has printed, kept in memory and pushed to the frontend as they happen, so the Logs window can show them. See **Logs** below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, the install directories, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
 | `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
 | `server.rs` (`fetch_metadata`, `rescan_library`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button, and to rescan afterwards. The work happens on the server, which is the machine holding the library. |
@@ -368,6 +369,38 @@ Prefix paths are resolved to absolute before they reach either runtime. A
 relative install root was always questionable — it meant something different
 depending on where the app was started from — and umu refuses a `WINEPREFIX`
 that isn't absolute outright.
+
+### Logs
+
+The app's own output used to go to stderr and nowhere else. That is fine when
+it was started from a terminal and useless when it was started from the
+applications menu — which is exactly the case where "it didn't launch and I
+don't know why" happens, with the answer sitting in the journal.
+
+`logs.rs` keeps the last 500 lines in a ring buffer and pushes each new one to
+the frontend as `log:line`; Settings → **View logs** opens a window showing
+them live, with a Copy button for pasting into a bug report. `log_line!` is
+`eprintln!` that also records, so the terminal still sees everything it did.
+Panics are routed through it as well, ahead of the default hook — a panic is
+the single most useful thing a log can contain.
+
+What the log contains is this app's own account of itself: the command each
+game was launched with, where each install went and how it ended, prefix
+folders brought in, saves uploaded. What it deliberately does *not* contain is
+the emulator's output. Games are spawned with their streams inherited so that
+closing Games Galore leaves a running game running; piping them here would tie
+the game's survival to this process, which is a bad trade for a log.
+
+The window follows the tail only when it is already at the bottom, so reading
+something further up while an install logs away doesn't yank the view.
+
+### The server's drives
+
+`GET /status` reports each of the server's library drives, whether it is
+mounted, how much room is left on it and how many games it holds. The **Check**
+button beside "Library server" in Settings shows that under the row. The
+library lives on that machine's disks, so this is a fact only it knows, and
+finding it out by sshing in is what this saves.
 
 ### Cloud saves
 
