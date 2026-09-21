@@ -67,6 +67,16 @@ const existing = [
   check('...and adds no elements of its own',
         doc.querySelectorAll('#logs-output b').length, 0);
 
+  // A game's own output is attributed to it by the backend, and the
+  // window picks that prefix out so a wall of Wine chatter is
+  // scannable. The text must survive that untouched.
+  rt.emit('log:line', { at: Date.now(), text: '[Ferrofluid] fixme:heap: stub' });
+  await sleep(50);
+  check("a game's line keeps its text, title and all",
+        lines()[4].includes('[Ferrofluid] fixme:heap: stub'), true);
+  check('...with the title marked up as the game rather than the app',
+        doc.querySelectorAll('#logs-output .log-game').length, 1);
+
   // jsdom has no clipboard, which is also the case in a webview that
   // declines to provide one — both paths matter, so both are here.
   let copied = null;
@@ -76,7 +86,7 @@ const existing = [
   check('copying says it copied',
         doc.getElementById('logs-copy').textContent.trim(), 'Copied');
   check('...and copies every line, stamped as shown',
-        copied.split('\n').length, 4);
+        copied.split('\n').length, 5);
   check('...with the time in front of each',
         /^\d\d:\d\d:\d\d installing PC\/Ferrofluid/.test(copied), true);
 
@@ -102,7 +112,7 @@ const existing = [
   doc.getElementById('view-logs').click();
   await sleep(100);
   check('a line printed while it was closed is there on reopening',
-        lines().length, 5);
+        lines().length, 6);
 
   check('no uncaught errors', errors, []);
   finish();

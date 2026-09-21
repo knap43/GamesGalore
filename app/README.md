@@ -14,7 +14,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `catalog_cache.rs` | `installed-cache.json` beside it: the catalog entries for installed titles, so the shelf is on screen at launch without waiting on the server. See **Starting up before the server answers** below. |
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
-| `logs.rs` | The last few hundred lines this session has printed, kept in memory and pushed to the frontend as they happen, so the Logs window can show them. See **Logs** below. |
+| `logs.rs` | The last few hundred lines this session has printed — the app's own, and each running game's, tailed out of the file its output is redirected into — kept in memory and pushed to the frontend as they happen. See **Logs** below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, the install directories, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
 | `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
 | `server.rs` (`fetch_metadata`, `rescan_library`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button, and to rescan afterwards. The work happens on the server, which is the machine holding the library. |
@@ -384,15 +384,38 @@ them live, with a Copy button for pasting into a bug report. `log_line!` is
 Panics are routed through it as well, ahead of the default hook — a panic is
 the single most useful thing a log can contain.
 
-What the log contains is this app's own account of itself: the command each
-game was launched with, where each install went and how it ended, prefix
-folders brought in, saves uploaded. What it deliberately does *not* contain is
-the emulator's output. Games are spawned with their streams inherited so that
-closing Games Galore leaves a running game running; piping them here would tie
-the game's survival to this process, which is a bad trade for a log.
+The log contains this app's own account of itself — the command each game was
+launched with, where each install went and how it ended, prefix folders brought
+in, saves uploaded — **and the game's own output**, prefixed with its title.
+
+That second part takes the long way round on purpose. A pipe would have been the
+obvious way to capture a child's output and the wrong one: once nothing is
+reading a pipe, the next write to it kills the writer, so closing Games Galore
+would start taking running games down with it — exactly the property the
+detached launch exists to preserve. So the game's streams are redirected into a
+file under `game-output/` in the app data directory instead. A file descriptor
+onto a file needs nobody alive to stay valid, and every process the emulator
+starts inherits it, which matters under Wine where the thing that actually
+prints is several processes below the command that was run. `logs::follow` then
+tails that file for as long as the session lasts, and reads it once more
+afterwards, since a game most often says why on its way out.
+
+Three consequences worth knowing:
+
+- **The full output is always on disk**, ten runs deep, whatever the window
+  shows. `logs::prune_runs` sweeps the rest.
+- **A flood is summarised rather than shown.** A game logging every frame would
+  empty a 500-line buffer in seconds, so at most 120 lines per poll reach the
+  window, preceded by a line saying how many were skipped and naming the file
+  that has them all.
+- **A game that printed nothing leaves nothing behind**: an empty output file is
+  deleted when the session ends.
+
+`\r` counts as a line ending alongside `\n`, so a progress bar redrawing itself
+in place reads as successive lines rather than one endless one.
 
 The window follows the tail only when it is already at the bottom, so reading
-something further up while an install logs away doesn't yank the view.
+something further up while a game logs away doesn't yank the view.
 
 ### The server's drives
 

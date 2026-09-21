@@ -11,7 +11,9 @@
 // session to have ended — are collected around `Runtime` below.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::settings::{get_settings, EmulatorConfig, Settings};
@@ -512,9 +514,24 @@ fn supervise(
     prefix: Option<PathBuf>,
     runtime: Runtime,
     watching: Vec<crate::prefix_migrate::LinkSnapshot>,
+    output: Option<PathBuf>,
 ) {
     let started_at = crate::playtime::now();
     let session_began = crate::prefix_migrate::now_millis();
+
+    // Followed for as long as the session lasts, and read once more
+    // after it ends — under Wine the game's own process outlives the
+    // command that started it, and it is usually on the way out that a
+    // game says why.
+    let done = Arc::new(AtomicBool::new(false));
+    if let Some(path) = output {
+        let label = game_id
+            .split_once('/')
+            .map(|(_, title)| title.to_string())
+            .unwrap_or_else(|| game_id.clone());
+        crate::logs::follow(path, label, done.clone());
+    }
+
     std::thread::spawn(move || {
         let _ = child.wait();
         if let (Runtime::Wine, Some(prefix)) = (runtime, &prefix) {
@@ -523,6 +540,7 @@ fn supervise(
                 .env("WINEPREFIX", prefix)
                 .status();
         }
+        done.store(true, Ordering::Relaxed);
 
         // Only ever non-empty for a prefix that already had its save
         // folders linked out to the home directory. Now that the game
@@ -665,13 +683,44 @@ fn launch_blocking(
         }
     }
 
+    // The game's output goes to a file, which the Logs window then
+    // follows. A pipe would have been the obvious way and the wrong
+    // one: a pipe nobody is reading kills the writer, so closing Games
+    // Galore would start taking running games down with it. A file
+    // descriptor onto a file needs nobody alive at all.
+    //
+    // Every process the emulator starts inherits it too, which is the
+    // point — under Wine the thing that prints is the game, several
+    // processes below the command that was run here.
+    let output = crate::logs::session_file(&app, &game_id);
+    if let Some((path, file)) = &output {
+        match (file.try_clone(), file.try_clone()) {
+            (Ok(out), Ok(err)) => {
+                command.stdout(Stdio::from(out));
+                command.stderr(Stdio::from(err));
+                crate::log_line!("this session's output: {}", path.display());
+            }
+            // Couldn't duplicate the handle: inherit the streams as
+            // before rather than lose the launch over a log.
+            _ => crate::log_line!("could not capture output to {}", path.display()),
+        }
+    }
+
     // Detached: the emulator's lifetime isn't tied to this app, so
     // closing Games Galore doesn't take a running game down with it.
     let child = command
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
 
-    supervise(app, child, game_id, prefix, runtime, watching);
+    supervise(
+        app,
+        child,
+        game_id,
+        prefix,
+        runtime,
+        watching,
+        output.map(|(path, _)| path),
+    );
     Ok(())
 }
 

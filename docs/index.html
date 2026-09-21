@@ -196,6 +196,10 @@
   .logs-output:focus-visible { outline: none; border-color: var(--accent-pink); }
   .log-line { color: var(--text-muted); }
   .log-time { color: var(--text-faint); margin-right: 10px; }
+  /* A game's own output is prefixed with its title; colouring the
+     prefix is what makes a wall of Wine chatter scannable as "this
+     came from the game" rather than from the app. */
+  .log-game { color: var(--accent-violet); }
   .logs-empty { color: var(--text-faint); }
 
   .modal-header {
@@ -1406,8 +1410,9 @@
         <label class="setting-label">Logs</label>
         <div class="setting-desc">
           What this session has printed — the command each game was launched with, where each
-          install went, and anything that went wrong. The same lines the terminal would show,
-          kept whether or not there is a terminal to show them.
+          install went, anything that went wrong, and the running game's own output, under its
+          title. The same lines the terminal would show, kept whether or not there is a terminal
+          to show them.
         </div>
         <button class="browse-button" id="view-logs" type="button">View logs</button>
       </div>
@@ -2772,6 +2777,13 @@ function logTime(millis) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/* Escaped first, then the game's own `[Title] ` prefix is picked back
+   out and coloured — escaping introduces no brackets of its own, so
+   the match can only be the prefix the backend wrote. */
+function logText(text) {
+  return escapeHTML(text).replace(/^\[([^\]]+)\] /, '<span class="log-game">[$1]</span> ');
+}
+
 function renderLogs() {
   const out = document.getElementById('logs-output');
   if (!logLines.length) {
@@ -2780,7 +2792,7 @@ function renderLogs() {
     return;
   }
   out.innerHTML = logLines.map(line =>
-    `<div class="log-line"><span class="log-time">${logTime(line.at)}</span>${escapeHTML(line.text)}</div>`
+    `<div class="log-line"><span class="log-time">${logTime(line.at)}</span>${logText(line.text)}</div>`
   ).join('');
 }
 
@@ -2797,7 +2809,7 @@ function appendLogLine(line) {
   } else {
     const el = document.createElement('div');
     el.className = 'log-line';
-    el.innerHTML = `<span class="log-time">${logTime(line.at)}</span>${escapeHTML(line.text)}`;
+    el.innerHTML = `<span class="log-time">${logTime(line.at)}</span>${logText(line.text)}`;
     out.appendChild(el);
   }
   if (pinned) out.scrollTop = out.scrollHeight;
