@@ -1274,6 +1274,16 @@
       </div>
 
       <div class="setting-block">
+        <label class="setting-label">Logs</label>
+        <div class="setting-desc">
+          What this session has printed: the command each game was launched with, where each
+          install went, anything that went wrong, and the running game's own output under its
+          title — whether or not there is a terminal to show it.
+        </div>
+        <button class="browse-button" id="view-logs" type="button">View logs</button>
+      </div>
+
+      <div class="setting-block">
         <label class="setting-label" for="server-base-input">Library server address</label>
         <div class="setting-desc">The Python server's address on your network, e.g. http://192.168.1.20:8420</div>
         <input class="setting-input" id="server-base-input" type="text" placeholder="http://192.168.1.20:8420" autocomplete="off">
@@ -1406,16 +1416,6 @@
         </button>
       </div>
 
-      <div class="setting-block">
-        <label class="setting-label">Logs</label>
-        <div class="setting-desc">
-          What this session has printed — the command each game was launched with, where each
-          install went, anything that went wrong, and the running game's own output, under its
-          title. The same lines the terminal would show, kept whether or not there is a terminal
-          to show them.
-        </div>
-        <button class="browse-button" id="view-logs" type="button">View logs</button>
-      </div>
     </div>
   </div>
 

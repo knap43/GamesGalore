@@ -63,6 +63,11 @@ const press = (win, key) => win.document.dispatchEvent(
     visited.push(el);
   }
 
+  // Logs sit at the top of the form now, so they are the first thing
+  // the walk reaches after the close button.
+  check('the first control after Close is View logs',
+        visited[0] && visited[0].id, 'view-logs');
+
   const modal = doc.querySelector('#settings-backdrop .modal');
   check('the walk stays inside the modal',
         visited.every(el => modal.contains(el)), true);

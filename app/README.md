@@ -378,8 +378,8 @@ applications menu — which is exactly the case where "it didn't launch and I
 don't know why" happens, with the answer sitting in the journal.
 
 `logs.rs` keeps the last 500 lines in a ring buffer and pushes each new one to
-the frontend as `log:line`; Settings → **View logs** opens a window showing
-them live, with a Copy button for pasting into a bug report. `log_line!` is
+the frontend as `log:line`; **View logs**, at the top of Settings, opens a
+window showing them live, with a Copy button for pasting into a bug report. `log_line!` is
 `eprintln!` that also records, so the terminal still sees everything it did.
 Panics are routed through it as well, ahead of the default hook — a panic is
 the single most useful thing a log can contain.
