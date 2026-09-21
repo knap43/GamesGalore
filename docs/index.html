@@ -495,6 +495,12 @@
     color: var(--text-primary);
   }
 
+  /* A card's sub-line while something is happening to it. Coloured
+     rather than merely worded, so an arriving title reads as a state
+     rather than as a genre nobody recognises. */
+  .card-working { color: var(--accent-pink); }
+  .card-failed { color: #ffb4b4; }
+
   /* ---- Grid ---- */
   .grid {
     display: grid;
@@ -3133,7 +3139,14 @@ function getFilteredSortedGames() {
     const matchesGenre = state.genres.size === 0 || state.genres.has(g.genre);
     const matchesTags = state.tags.size === 0
       || [...state.tags].every(tag => (g.tags || []).includes(tag));
-    const matchesInstalled = !state.installedOnly || g.installed;
+    // A game being installed belongs on the shelf it is arriving on.
+    // Filtering it out the moment its download starts — which is what
+    // "installed" alone did — took the title off screen at exactly the
+    // moment someone was watching it, and took its progress with it. A
+    // failed one stays for the same reason: vanishing is the one
+    // response that makes a failure impossible to notice or retry.
+    const matchesInstalled = !state.installedOnly
+      || g.installed || !!g.installProgress || !!g.installError;
     const matchesQuery = matchesSearch(g, state.query);
     return matchesPlatform && matchesGenre && matchesTags && matchesInstalled && matchesQuery;
   });
@@ -3199,6 +3212,16 @@ function formatEta(seconds) {
 }
 
 function cardSubLine(g) {
+  // What is happening to a game outranks what it is: on a shelf that
+  // now shows arriving titles alongside installed ones, this line is
+  // what tells them apart.
+  if (g.installProgress) {
+    const queued = g.installProgress.status === 'queued';
+    const text = queued ? 'Queued' : `Installing… ${g.installProgress.pct ?? 0}%`;
+    return `<span class="card-working">${text}</span>`;
+  }
+  if (g.installError) return '<span class="card-failed">Install failed</span>';
+
   const segs = [];
   if (g.genre) segs.push(g.genre);
   else if (g.release_year) segs.push(String(g.release_year));

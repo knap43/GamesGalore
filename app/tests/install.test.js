@@ -228,5 +228,67 @@ const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
     check('no uncaught errors on the adoption path', errors, []);
   }
 
+  // === the shelf while a game is arriving ===========================
+  // The Installed filter is the shelf people play from, and it is on
+  // by default once anything is installed. A title whose download has
+  // just started belongs on it: filtering by "installed" alone took
+  // the game off screen at the moment someone pressed Install, taking
+  // its progress with it.
+  {
+    const rt = createRuntime();
+    const status = (id, payload) => rt.emit('install:status', [id, payload]);
+    const invoke = async (cmd) => {
+      switch (cmd) {
+        case 'get_settings': return {
+          server_base: 'http://x:8420', install_root: '/games', sound_enabled: false,
+          install_roots: ['/games'], emulators: {}, launch_overrides: {}, prefix_root: '',
+          save_sync: { enabled: false, device_name: 'test', switch_data_dir: null, title_ids: {} },
+        };
+        case 'get_cached_library': return [];
+        case 'fetch_library': return LIBRARY.map(g => ({ ...g }));
+        case 'get_install_states':
+          return { 'PC/Hollow Meridian': { status: 'installed', local_dir: '/games/PC/Hollow Meridian' } };
+        default: return null;
+      }
+    };
+
+    const { doc, errors } = await bootApp({ invoke, listen: rt.listen });
+    const shelf = () => Array.from(doc.querySelectorAll('.card')).map(c => c.dataset.id);
+    const sub = id => doc.querySelector(`.card[data-id="${id}"] .sub`).textContent;
+
+    check('the filter is on, with the installed title on the shelf',
+          shelf(), ['PC/Hollow Meridian']);
+
+    status('PC/Tidebreaker', { status: 'queued', file: '', pct: 0 });
+    await sleep(60);
+    check('a queued title joins the shelf rather than vanishing from it',
+          shelf().includes('PC/Tidebreaker'), true);
+    check('...saying what it is waiting for', sub('PC/Tidebreaker'), 'Queued');
+
+    status('PC/Tidebreaker', { status: 'downloading', file: 'game.bin', pct: 37, bytes_per_sec: 0, eta_secs: null });
+    await sleep(60);
+    check('...and stays while it downloads', shelf().includes('PC/Tidebreaker'), true);
+    check('...with its progress on the card', sub('PC/Tidebreaker'), 'Installing… 37%');
+
+    status('PC/Tidebreaker', { status: 'failed', message: 'not enough room' });
+    await sleep(60);
+    check('a failure stays put, since vanishing hides it',
+          shelf().includes('PC/Tidebreaker'), true);
+    check('...and says so', sub('PC/Tidebreaker'), 'Install failed');
+
+    status('PC/Tidebreaker', { status: 'installed', local_dir: '/games/PC/Tidebreaker' });
+    await sleep(60);
+    check('once installed it is simply one of the shelf',
+          shelf().sort(), ['PC/Hollow Meridian', 'PC/Tidebreaker']);
+    check('...and its card goes back to describing the game',
+          sub('PC/Tidebreaker'), '2020');
+
+    status('PC/Tidebreaker', { status: 'not_installed' });
+    await sleep(60);
+    check('a title that is none of those is off the shelf again',
+          shelf(), ['PC/Hollow Meridian']);
+    check('no uncaught errors while the shelf changed under it', errors, []);
+  }
+
   finish();
 })();

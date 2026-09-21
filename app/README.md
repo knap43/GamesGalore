@@ -193,6 +193,16 @@ Hidden directories are skipped, which is what keeps `.wine-prefixes` —
 which sits beside the games by default — from being read as a platform
 full of titles.
 
+**The shelf holds arriving titles too.** The Installed filter is what
+the library is usually being looked at through — it turns itself on
+when anything is installed — so filtering on `installed` alone meant a
+game left the shelf the instant someone pressed Install, taking its
+own progress with it. A title being queued, downloading, or having
+failed now stays put, and its card's sub-line says which of those it
+is instead of naming its genre. The count beside the filter still
+counts only what is installed, because that is what the number means;
+a title on its way is on screen rather than in the tally.
+
 **A choice of drive**, made from the same numbers. Settings holds a
 list of install directories rather than one, and `choose_root` decides
 per install:
