@@ -229,7 +229,7 @@ pub fn migrate_after_session(before: &[LinkSnapshot], session_start: u64) -> Mig
             Ok(()) => result
                 .moved
                 .extend(touched.iter().map(|name| format!("{}/{name}", shot.folder))),
-            Err(e) => eprintln!("could not bring {} into the prefix: {e}", shot.folder),
+            Err(e) => crate::log_line!("could not bring {} into the prefix: {e}", shot.folder),
         }
     }
     result

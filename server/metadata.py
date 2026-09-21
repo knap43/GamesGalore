@@ -287,8 +287,9 @@ def _cli() -> int:
 
     import requests
 
-    from config import LIBRARY_ROOT, METADATA_MAX_SCREENSHOTS, RAWG_API_KEY
+    from config import METADATA_MAX_SCREENSHOTS, RAWG_API_KEY
     from library import scan_library
+    from server import library_roots
 
     parser = argparse.ArgumentParser(description="Fill in game folders from RAWG.")
     parser.add_argument("titles", nargs="*", help="only these games (default: all incomplete)")
@@ -305,18 +306,34 @@ def _cli() -> int:
         return 2
 
     wanted = {t.lower() for t in args.titles}
-    games = [
-        g for g in scan_library(LIBRARY_ROOT)
-        if (not wanted or g.title.lower() in wanted)
-        and (args.overwrite or not (g.description and g.cover))
-    ]
+    # Every drive the library spans, and the directory each game came
+    # from, so a game on the second drive is filled in where it is.
+    found = []
+    for root in library_roots():
+        try:
+            games_on_root = scan_library(root)
+        except FileNotFoundError:
+            print(f"library root is not there, skipping it: {root}")
+            continue
+        for game in games_on_root:
+            found.append((game, root / game.platform / game.title))
+
+    seen = set()
+    games = []
+    for game, directory in found:
+        if game.id in seen:
+            continue
+        seen.add(game.id)
+        if (not wanted or game.title.lower() in wanted) and (
+            args.overwrite or not (game.description and game.cover)
+        ):
+            games.append((game, directory))
     if not games:
         print("nothing to fetch — every game already has a description and a cover")
         return 0
 
     print(f"fetching {len(games)} game(s)")
-    for index, game in enumerate(games, 1):
-        directory = LIBRARY_ROOT / game.platform / game.title
+    for index, (game, directory) in enumerate(games, 1):
         try:
             result = fill_game_folder(
                 directory, game.title, client,

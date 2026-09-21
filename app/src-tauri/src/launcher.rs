@@ -11,7 +11,9 @@
 // session to have ended — are collected around `Runtime` below.
 
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::settings::{get_settings, EmulatorConfig, Settings};
@@ -457,10 +459,12 @@ pub fn prefix_dir(settings: &Settings, platform: &str, game_id: &str) -> Option<
     }
     let (_, title) = game_id.split_once('/')?;
     let root = if settings.prefix_root.trim().is_empty() {
-        if settings.install_root.trim().is_empty() {
-            return None;
-        }
-        Path::new(&settings.install_root).join(".wine-prefixes")
+        // The first install directory, even when there are several: a
+        // prefix *is* the game's save data, so moving one when the
+        // list of drives changes would lose saves. It stays where it
+        // was made, and `prefix_root` exists for anyone who wants it
+        // somewhere else entirely.
+        settings.roots().first()?.join(".wine-prefixes")
     } else {
         PathBuf::from(&settings.prefix_root)
     };
@@ -510,9 +514,24 @@ fn supervise(
     prefix: Option<PathBuf>,
     runtime: Runtime,
     watching: Vec<crate::prefix_migrate::LinkSnapshot>,
+    output: Option<PathBuf>,
 ) {
     let started_at = crate::playtime::now();
     let session_began = crate::prefix_migrate::now_millis();
+
+    // Followed for as long as the session lasts, and read once more
+    // after it ends — under Wine the game's own process outlives the
+    // command that started it, and it is usually on the way out that a
+    // game says why.
+    let done = Arc::new(AtomicBool::new(false));
+    if let Some(path) = output {
+        let label = game_id
+            .split_once('/')
+            .map(|(_, title)| title.to_string())
+            .unwrap_or_else(|| game_id.clone());
+        crate::logs::follow(path, label, done.clone());
+    }
+
     std::thread::spawn(move || {
         let _ = child.wait();
         if let (Runtime::Wine, Some(prefix)) = (runtime, &prefix) {
@@ -521,6 +540,7 @@ fn supervise(
                 .env("WINEPREFIX", prefix)
                 .status();
         }
+        done.store(true, Ordering::Relaxed);
 
         // Only ever non-empty for a prefix that already had its save
         // folders linked out to the home directory. Now that the game
@@ -531,7 +551,7 @@ fn supervise(
         if !watching.is_empty() {
             let migrated = crate::prefix_migrate::migrate_after_session(&watching, session_began);
             if !migrated.moved.is_empty() {
-                eprintln!("brought {} into the prefix", migrated.moved.join(", "));
+                crate::log_line!("brought {} into the prefix", migrated.moved.join(", "));
                 let _ = app.emit("prefix:saves-moved", (&game_id, &migrated));
             }
         }
@@ -605,7 +625,7 @@ fn launch_blocking(
     let mut args = emu.args_prefix.clone();
     args.extend(platform_args(&platform, &file_str));
 
-    eprintln!("launch_game: {} {}", emu.command, shell_quote(&args));
+    crate::log_line!("launch_game: {} {}", emu.command, shell_quote(&args));
 
     let mut command = Command::new(&emu.command);
     command.args(&args);
@@ -640,13 +660,13 @@ fn launch_blocking(
                 // Not fatal: the runtime will create the prefix
                 // itself, the links will be there, and the UI will say
                 // so.
-                eprintln!("could not prepare {}: {e}", prefix.display());
+                crate::log_line!("could not prepare {}: {e}", prefix.display());
             }
         }
 
         let isolated = isolate_profile_links(prefix, fresh);
         if !isolated.is_empty() {
-            eprintln!("kept {} inside {}", isolated.join(", "), prefix.display());
+            crate::log_line!("kept {} inside {}", isolated.join(", "), prefix.display());
         }
 
         // Anything still linked out belongs to a prefix that predates
@@ -663,13 +683,44 @@ fn launch_blocking(
         }
     }
 
+    // The game's output goes to a file, which the Logs window then
+    // follows. A pipe would have been the obvious way and the wrong
+    // one: a pipe nobody is reading kills the writer, so closing Games
+    // Galore would start taking running games down with it. A file
+    // descriptor onto a file needs nobody alive at all.
+    //
+    // Every process the emulator starts inherits it too, which is the
+    // point — under Wine the thing that prints is the game, several
+    // processes below the command that was run here.
+    let output = crate::logs::session_file(&app, &game_id);
+    if let Some((path, file)) = &output {
+        match (file.try_clone(), file.try_clone()) {
+            (Ok(out), Ok(err)) => {
+                command.stdout(Stdio::from(out));
+                command.stderr(Stdio::from(err));
+                crate::log_line!("this session's output: {}", path.display());
+            }
+            // Couldn't duplicate the handle: inherit the streams as
+            // before rather than lose the launch over a log.
+            _ => crate::log_line!("could not capture output to {}", path.display()),
+        }
+    }
+
     // Detached: the emulator's lifetime isn't tied to this app, so
     // closing Games Galore doesn't take a running game down with it.
     let child = command
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", emu.command))?;
 
-    supervise(app, child, game_id, prefix, runtime, watching);
+    supervise(
+        app,
+        child,
+        game_id,
+        prefix,
+        runtime,
+        watching,
+        output.map(|(path, _)| path),
+    );
     Ok(())
 }
 

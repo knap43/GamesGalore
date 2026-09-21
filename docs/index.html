@@ -175,6 +175,33 @@
     padding: 22px 24px;
     box-shadow: 0 30px 60px -20px rgba(0,0,0,0.6);
   }
+  /* Wider than Settings and fixed in height: log lines are long, and
+     a window that grew and shrank as lines arrived would be unusable
+     while anything was actually happening. */
+  .logs-modal { max-width: 860px; }
+  .logs-actions { display: flex; align-items: center; gap: 10px; }
+  .logs-output {
+    height: 60vh;
+    overflow-y: auto;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: var(--bg-void);
+    border: 1px solid var(--border-hair);
+    font-family: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .logs-output:focus-visible { outline: none; border-color: var(--accent-pink); }
+  .log-line { color: var(--text-muted); }
+  .log-time { color: var(--text-faint); margin-right: 10px; }
+  /* A game's own output is prefixed with its title; colouring the
+     prefix is what makes a wall of Wine chatter scannable as "this
+     came from the game" rather than from the app. */
+  .log-game { color: var(--accent-violet); }
+  .logs-empty { color: var(--text-faint); }
+
   .modal-header {
     display: flex;
     align-items: center;
@@ -262,6 +289,10 @@
     font-size: 11.5px;
     color: var(--text-primary);
   }
+
+  .install-root-row + .install-root-row { margin-top: 10px; }
+  .install-root-space { margin-top: 4px; margin-bottom: 0; }
+  #add-install-root { margin-top: 10px; }
 
   .emulator-row {
     padding: 12px;
@@ -1243,18 +1274,31 @@
       </div>
 
       <div class="setting-block">
+        <label class="setting-label">Logs</label>
+        <div class="setting-desc">
+          What this session has printed: the command each game was launched with, where each
+          install went, anything that went wrong, and the running game's own output under its
+          title — whether or not there is a terminal to show it.
+        </div>
+        <button class="browse-button" id="view-logs" type="button">View logs</button>
+      </div>
+
+      <div class="setting-block">
         <label class="setting-label" for="server-base-input">Library server address</label>
         <div class="setting-desc">The Python server's address on your network, e.g. http://192.168.1.20:8420</div>
         <input class="setting-input" id="server-base-input" type="text" placeholder="http://192.168.1.20:8420" autocomplete="off">
       </div>
 
       <div class="setting-block">
-        <label class="setting-label" for="install-root-input">Install directory</label>
-        <div class="setting-desc">Where downloaded games are stored on this machine.</div>
-        <div class="setting-input-row">
-          <input class="setting-input" id="install-root-input" type="text" placeholder="/home/you/Games" autocomplete="off">
-          <button class="browse-button" id="browse-install-root" type="button">Browse…</button>
+        <label class="setting-label" for="install-root-input">Install directories</label>
+        <div class="setting-desc">
+          Where downloaded games are stored on this machine. Add a second directory — on another
+          drive — and the library spreads across both: a game already on a drive stays there, and
+          a new one goes wherever there is the most room. The first directory is also where Wine
+          prefixes live, so PC saves stay put when the rest of the list changes.
         </div>
+        <div id="install-root-rows"></div>
+        <button class="browse-button" id="add-install-root" type="button">Add another drive</button>
       </div>
 
       <div class="setting-block">
@@ -1355,9 +1399,10 @@
             <span class="dependency-status" data-status>Not checked</span>
           </div>
           <div class="emulator-fields-row">
-            <span class="setting-desc" style="margin:0;">Checks whether the server itself has <code>nsz</code> available for Switch conversions.</span>
+            <span class="setting-desc" style="margin:0;">Checks whether the server itself has <code>nsz</code> available for Switch conversions, and how much room is left on its library drives.</span>
             <button class="browse-button emu-check" type="button" data-check="server-nsz">Check</button>
           </div>
+          <div class="setting-desc" id="server-library-roots" style="margin:8px 0 0;"></div>
         </div>
       </div>
 
@@ -1370,6 +1415,23 @@
           <span class="toggle-knob"></span>
         </button>
       </div>
+
+    </div>
+  </div>
+
+  <!-- ================= LOGS ================= -->
+  <div class="modal-backdrop" id="logs-backdrop" style="display:none">
+    <div class="modal logs-modal" role="dialog" aria-label="Logs">
+      <div class="modal-header">
+        <h2>Logs</h2>
+        <div class="logs-actions">
+          <button class="browse-button" id="logs-copy" type="button">Copy</button>
+          <button class="modal-close" id="logs-close" aria-label="Close logs">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      </div>
+      <div class="logs-output" id="logs-output" tabindex="0" role="log" aria-live="polite" aria-label="Session output"></div>
     </div>
   </div>
 
@@ -1759,6 +1821,10 @@ function applyPlaytime(game, entry) {
    restart. */
 function setupPlaytimeListener() {
   if (!TAURI) return;
+  TAURI.event.listen('log:line', (event) => {
+    appendLogLine(event.payload);
+  });
+
   TAURI.event.listen('playtime:changed', (event) => {
     const [id, entry] = event.payload;
     const game = GAMES.find(g => g.id === id);
@@ -1858,17 +1924,18 @@ function installGame(game) {
     simulateDemoInstall(game);
     return;
   }
-  if (!state.serverBase || !state.installRoot) {
-    alert('Set the library server address and install directory in Settings first.');
+  if (!state.serverBase || !state.installRoots.length) {
+    alert('Set the library server address and an install directory in Settings first.');
     return;
   }
   // Progress arrives via the "install:status" listener above, not the
   // resolution of this promise — this can take a long time for a large
   // game, and the UI shouldn't sit frozen waiting on it.
+  // Which drive it lands on is decided in the backend, which is the
+  // only side that knows how much room each one has.
   TAURI.core.invoke('install_game', {
     game,
     serverBase: state.serverBase,
-    installRoot: state.installRoot,
   }).catch(err => console.error('install failed', err));
 }
 
@@ -1939,7 +2006,7 @@ function cancelInstall(game) {
   // app was closed mid-download last session and this game has read
   // "Downloading..." ever since with nothing actually running anymore.
   // Same command, same server-side cleanup either way.
-  TAURI.core.invoke('cancel_install', { gameId: game.id, installRoot: state.installRoot })
+  TAURI.core.invoke('cancel_install', { gameId: game.id })
     .catch(err => console.error('cancel failed', err));
 }
 
@@ -2465,6 +2532,8 @@ let state = {
   soundEnabled: true,
   serverBase: '',
   installRoot: '',
+  installRoots: [],
+  rootSpace: [],
   launchOverrides: {}, // game id -> path, relative to that game's install dir
   prefixRoot: '',
   // Mirrors SaveSyncConfig::default() in settings.rs — on, and
@@ -2509,7 +2578,12 @@ async function loadSettings() {
   const s = await TAURI.core.invoke('get_settings');
   state.soundEnabled = s.sound_enabled;
   state.serverBase = s.server_base;
-  state.installRoot = s.install_root;
+  // An older settings.json has one directory and no list; a newer one
+  // has both. Either way the UI works on the list alone.
+  state.installRoots = (s.install_roots && s.install_roots.length)
+    ? s.install_roots.slice()
+    : (s.install_root ? [s.install_root] : []);
+  state.installRoot = state.installRoots[0] || '';
   state.emulators = s.emulators;
   state.launchOverrides = s.launch_overrides || {};
   state.prefixRoot = s.prefix_root || '';
@@ -2524,7 +2598,8 @@ async function loadSettings() {
   updateSaveSyncUI();
   renderSwitchSavesStatus();
   document.getElementById('server-base-input').value = s.server_base;
-  document.getElementById('install-root-input').value = s.install_root;
+  renderInstallRoots();
+  refreshRootSpace();
   updateSoundToggleUI();
   renderEmulatorRows();
 }
@@ -2535,6 +2610,7 @@ async function persistSettings() {
     settings: {
       server_base: state.serverBase,
       install_root: state.installRoot,
+      install_roots: state.installRoots,
       sound_enabled: state.soundEnabled,
       emulators: state.emulators,
       launch_overrides: state.launchOverrides,
@@ -2662,9 +2738,144 @@ async function checkServerNsz() {
     const result = await TAURI.core.invoke('fetch_server_status', { serverBase: state.serverBase });
     statusEl.textContent = result.nsz_found ? (result.nsz_version ? `Found · ${result.nsz_version}` : 'Found') : 'Not found on server';
     statusEl.className = `dependency-status ${result.nsz_found ? 'found' : 'missing'}`;
+    renderServerLibraryRoots(result.library_roots);
   } catch (err) {
     statusEl.textContent = 'Server unreachable';
     statusEl.className = 'dependency-status missing';
+    renderServerLibraryRoots(null);
+  }
+}
+
+/* The server's own drives, as it reports them. The library lives on
+   that machine's disks, so "nearly full" is a fact only it knows —
+   and finding it out by sshing in is exactly what this saves. */
+function renderServerLibraryRoots(roots) {
+  const el = document.getElementById('server-library-roots');
+  if (!roots || !roots.length) { el.innerHTML = ''; return; }
+  el.innerHTML = roots.map(root => {
+    if (!root.exists) return `<div><code>${root.path}</code> — not mounted on the server</div>`;
+    const games = root.games === 1 ? '1 game' : `${root.games} games`;
+    const free = root.free_text ? `${root.free_text} free` : 'free space unknown';
+    return `<div><code>${root.path}</code> — ${games}, ${free}</div>`;
+  }).join('');
+}
+
+/* ---------------------------------------------------------------
+ * LOGS
+ * ---------------------------------------------------------------
+ * What the app has printed this session, which used to go to a
+ * terminal that in normal use doesn't exist — started from the
+ * applications menu, stderr goes to the journal and nowhere anybody
+ * looks. The backend keeps the last few hundred lines and pushes each
+ * new one as it happens; this shows them live.
+ * --------------------------------------------------------------- */
+let logLines = [];
+
+function logTime(millis) {
+  const d = new Date(millis);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+/* Escaped first, then the game's own `[Title] ` prefix is picked back
+   out and coloured — escaping introduces no brackets of its own, so
+   the match can only be the prefix the backend wrote. */
+function logText(text) {
+  return escapeHTML(text).replace(/^\[([^\]]+)\] /, '<span class="log-game">[$1]</span> ');
+}
+
+function renderLogs() {
+  const out = document.getElementById('logs-output');
+  if (!logLines.length) {
+    out.innerHTML = '<div class="logs-empty">Nothing yet this session. '
+      + 'Launching a game or installing one writes here.</div>';
+    return;
+  }
+  out.innerHTML = logLines.map(line =>
+    `<div class="log-line"><span class="log-time">${logTime(line.at)}</span>${logText(line.text)}</div>`
+  ).join('');
+}
+
+/* Appends without re-rendering the whole scrollback, and only follows
+   the tail when the view is already at the bottom — reading something
+   further up while a download logs away shouldn't yank the view. */
+function appendLogLine(line) {
+  logLines.push(line);
+  if (!isLogsOpen()) return;
+  const out = document.getElementById('logs-output');
+  const pinned = out.scrollHeight - out.scrollTop - out.clientHeight < 40;
+  if (logLines.length === 1) {
+    renderLogs();
+  } else {
+    const el = document.createElement('div');
+    el.className = 'log-line';
+    el.innerHTML = `<span class="log-time">${logTime(line.at)}</span>${logText(line.text)}`;
+    out.appendChild(el);
+  }
+  if (pinned) out.scrollTop = out.scrollHeight;
+}
+
+async function openLogs() {
+  if (TAURI) {
+    try {
+      logLines = await TAURI.core.invoke('get_logs') || [];
+    } catch (err) {
+      console.error('failed to read the log', err);
+    }
+  }
+  renderLogs();
+  document.getElementById('logs-backdrop').style.display = 'flex';
+  const out = document.getElementById('logs-output');
+  out.scrollTop = out.scrollHeight;
+  focusNoScroll(document.getElementById('logs-close'));
+}
+
+function closeLogs() {
+  document.getElementById('logs-backdrop').style.display = 'none';
+  focusNoScroll(document.getElementById('view-logs'));
+}
+
+document.getElementById('view-logs').addEventListener('click', openLogs);
+document.getElementById('logs-close').addEventListener('click', closeLogs);
+document.getElementById('logs-backdrop').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('logs-backdrop')) closeLogs();
+});
+
+/* Copying the log is the point of having one to look at: it is what
+   gets pasted into a bug report. */
+document.getElementById('logs-copy').addEventListener('click', async () => {
+  const button = document.getElementById('logs-copy');
+  const text = logLines.map(l => `${logTime(l.at)} ${l.text}`).join('\n');
+  button.textContent = await copyToClipboard(text) ? 'Copied' : 'Could not copy';
+  setTimeout(() => { button.textContent = 'Copy'; }, 1500);
+});
+
+/* The async clipboard API where it exists, and the old selection
+   trick where it doesn't — WebKitGTK is not always willing to hand
+   over navigator.clipboard, and a Copy button that silently does
+   nothing is worse than no button. */
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch (err) {
+    console.error('failed to copy:', err.message);
+  }
+  try {
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand && document.execCommand('copy');
+    field.remove();
+    return !!copied;
+  } catch (err) {
+    console.error('failed to copy:', err.message);
+    return false;
   }
 }
 
@@ -3127,6 +3338,13 @@ function detailMetaHTML(game) {
     segs.push(`<span>${game.players === 1 ? '1 player' : `up to ${game.players} players`}</span>`);
   }
   if (typeof game.hours === 'number') segs.push(`<span>${game.hours}h played</span>`);
+  // Which drive it went to, once there is more than one to have gone
+  // to. With a single install directory this is the same answer for
+  // every game in the library and worth nobody's attention.
+  if (state.installRoots.length > 1 && game.localDir) {
+    const drive = state.installRoots.find(root => game.localDir.startsWith(root));
+    if (drive) segs.push(`<span>on ${drive}</span>`);
+  }
   return segs.join('<span class="dot-sep"></span>');
 }
 
@@ -3600,12 +3818,6 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  const browseBtn = e.target.closest('#browse-install-root');
-  if (browseBtn) {
-    browseForInstallRoot();
-    return;
-  }
-
   if (e.target.closest('#browse-switch-data-dir')) {
     browseForSwitchDataDir();
     return;
@@ -3731,9 +3943,108 @@ document.getElementById('server-base-input').addEventListener('change', (e) => {
   persistSettings();
 });
 
-document.getElementById('install-root-input').addEventListener('change', (e) => {
-  state.installRoot = e.target.value.trim();
+/* The list of drives. Rows are re-rendered wholesale rather than
+   patched, so the handlers are delegated to the container and work off
+   the row's index rather than off any element identity. */
+function renderInstallRoots() {
+  const rows = document.getElementById('install-root-rows');
+  const roots = state.installRoots.length ? state.installRoots : [''];
+  rows.innerHTML = roots.map((root, i) => `
+    <div class="install-root-row" data-index="${i}">
+      <div class="setting-input-row">
+        <input class="setting-input"${i === 0 ? ' id="install-root-input"' : ''} type="text"
+               placeholder="${i === 0 ? '/home/you/Games' : 'Another drive, e.g. /mnt/games'}"
+               autocomplete="off" aria-label="Install directory ${i + 1}" value="${root}">
+        <button class="browse-button" type="button" data-browse-root="${i}">Browse…</button>
+        ${roots.length > 1 ? `<button class="browse-button" type="button" data-remove-root="${i}">Remove</button>` : ''}
+      </div>
+      <div class="setting-desc install-root-space" data-space="${i}"></div>
+    </div>`).join('');
+  renderRootSpace();
+}
+
+/* How much room each drive has, which is the number that matters when
+   the reason for a second drive is that the first one is full. */
+function renderRootSpace() {
+  document.querySelectorAll('#install-root-rows [data-space]').forEach(el => {
+    const root = state.installRoots[Number(el.dataset.space)];
+    const found = (state.rootSpace || []).find(s => s.path === root);
+    if (!root || !found) { el.textContent = ''; return; }
+    if (found.available_text === null || found.available_text === undefined) {
+      el.textContent = 'Could not be read — is the drive mounted?';
+    } else if (!found.exists) {
+      el.textContent = `${found.available_text} free — this directory will be created on the first install`;
+    } else {
+      el.textContent = `${found.available_text} free`;
+    }
+  });
+}
+
+async function refreshRootSpace() {
+  if (!TAURI) return;
+  try {
+    state.rootSpace = (await TAURI.core.invoke('install_root_space')) || [];
+  } catch (err) {
+    // Not knowing how full a drive is doesn't stop anything working,
+    // and an install that won't fit still says so when it's tried.
+    console.error('failed to read free space', err);
+    state.rootSpace = [];
+  }
+  renderRootSpace();
+}
+
+/* Empty rows are dropped rather than stored: a blank line in the list
+   would be a drive at the filesystem root, which is nobody's
+   intention. The first surviving entry is the primary one. */
+function commitInstallRoots(roots) {
+  state.installRoots = roots.map(r => r.trim()).filter(Boolean);
+  state.installRoot = state.installRoots[0] || '';
   persistSettings();
+  renderInstallRoots();
+  refreshRootSpace();
+}
+
+document.getElementById('install-root-rows').addEventListener('change', (e) => {
+  const input = e.target.closest('.setting-input');
+  if (!input) return;
+  const index = Number(input.closest('.install-root-row').dataset.index);
+  const roots = state.installRoots.length ? state.installRoots.slice() : [''];
+  roots[index] = input.value;
+  commitInstallRoots(roots);
+});
+
+document.getElementById('install-root-rows').addEventListener('click', async (e) => {
+  const remove = e.target.closest('[data-remove-root]');
+  if (remove) {
+    const roots = state.installRoots.slice();
+    roots.splice(Number(remove.dataset.removeRoot), 1);
+    // Removing a drive from the list leaves every game on it exactly
+    // where it is; it just stops being offered for new installs.
+    commitInstallRoots(roots);
+    return;
+  }
+  const browse = e.target.closest('[data-browse-root]');
+  if (!browse) return;
+  const selected = await browseForFolder();
+  if (!selected) return;
+  const roots = state.installRoots.length ? state.installRoots.slice() : [''];
+  roots[Number(browse.dataset.browseRoot)] = selected;
+  commitInstallRoots(roots);
+});
+
+document.getElementById('add-install-root').addEventListener('click', async () => {
+  const selected = await browseForFolder();
+  if (selected) {
+    commitInstallRoots(state.installRoots.concat(selected));
+    return;
+  }
+  // No native picker (browser preview) or the dialog was cancelled:
+  // offer an empty row to type into rather than doing nothing.
+  if (state.installRoots.every(Boolean)) {
+    state.installRoots = state.installRoots.concat('');
+    renderInstallRoots();
+    document.querySelector('.install-root-row:last-child .setting-input').focus();
+  }
 });
 
 /* Opens the native folder picker and returns the chosen path, or null
@@ -3748,14 +4059,6 @@ async function browseForFolder() {
   return await TAURI.core.invoke('plugin:dialog|open', {
     options: { directory: true, multiple: false },
   });
-}
-
-async function browseForInstallRoot() {
-  const selected = await browseForFolder();
-  if (!selected) return;
-  state.installRoot = selected;
-  document.getElementById('install-root-input').value = selected;
-  persistSettings();
 }
 
 async function browseForSwitchDataDir() {
@@ -3884,6 +4187,10 @@ function isSettingsOpen() {
   return document.getElementById('settings-backdrop').style.display !== 'none';
 }
 
+function isLogsOpen() {
+  return document.getElementById('logs-backdrop').style.display !== 'none';
+}
+
 function openSettings() {
   document.getElementById('settings-backdrop').style.display = 'flex';
   focusNoScroll(document.getElementById('settings-close'));
@@ -4010,6 +4317,12 @@ function goBack() {
   if (isLaunchMenuOpen()) {
     playBackSound();
     closeLaunchMenu();
+    return;
+  }
+  // Logs open on top of Settings, so they close first.
+  if (isLogsOpen()) {
+    playBackSound();
+    closeLogs();
     return;
   }
   if (isSettingsOpen()) {

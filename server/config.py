@@ -1,8 +1,31 @@
 import os
 from pathlib import Path
 
-# Adjust to wherever the drive is actually mounted on this machine.
-LIBRARY_ROOT = Path("/mnt/game-library")
+# Where the games are. Adjust to wherever the drive is actually
+# mounted on this machine.
+#
+# List more than one and the library spans them: each is scanned in
+# order and the results are one catalog, so a second drive can simply
+# be added when the first fills up. A title present on two drives is
+# taken from the first one listed, which is what makes moving games
+# between drives safe to do while the server is running — the copy
+# being made is ignored until the old one is gone.
+#
+# The environment wins where it is set, which suits a systemd unit:
+#   LIBRARY_ROOTS=/mnt/game-library:/mnt/game-library-2
+LIBRARY_ROOTS = [
+    Path("/mnt/game-library"),
+    # Path("/mnt/game-library-2"),
+]
+
+if os.environ.get("LIBRARY_ROOTS"):
+    LIBRARY_ROOTS = [
+        Path(part) for part in os.environ["LIBRARY_ROOTS"].split(os.pathsep) if part
+    ]
+
+# What a single-drive install called it, and still may: a config.py
+# edited before there could be several is read for this name instead.
+LIBRARY_ROOT = LIBRARY_ROOTS[0]
 
 # Converted .nsp files land here, keyed by game id, so a title is only
 # ever decompressed once no matter how many times it's downloaded.

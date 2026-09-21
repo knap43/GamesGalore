@@ -19,8 +19,41 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Edit `config.py`: set `LIBRARY_ROOT` to the actual mount point and `CACHE_DIR`
-to wherever converted `.nsp` files should be cached.
+Edit `config.py`: set `LIBRARY_ROOTS` to the actual mount point(s) and
+`CACHE_DIR` to wherever converted `.nsp` files should be cached.
+
+### More than one drive
+
+`LIBRARY_ROOTS` is a list, so a library that has outgrown its disk simply gains
+another entry:
+
+```python
+LIBRARY_ROOTS = [
+    Path("/mnt/game-library"),
+    Path("/mnt/game-library-2"),
+]
+```
+
+Each drive is scanned in order and the results are one catalog, with the same
+`<Platform>/<Title>` layout expected on each. Three things follow:
+
+- **A title present on two drives is served from the first one listed.** That is
+  what makes moving a game between drives safe while the server is running: the
+  copy being made is ignored until the original is deleted.
+- **A drive that isn't mounted is skipped**, with a line saying so, rather than
+  emptying the catalog of the drives that are. Every drive missing is still the
+  error it always was.
+- **Nothing is written to the library**, so nothing has to decide which drive a
+  new game belongs on. You put games where you want them; the server finds them.
+
+The environment wins where it is set, which suits a systemd unit:
+
+```
+LIBRARY_ROOTS=/mnt/game-library:/mnt/game-library-2
+```
+
+A `config.py` from before this existed, with only `LIBRARY_ROOT` in it, keeps
+working unchanged and is read as a library of one drive.
 
 The cache and the saves used to live under `vault-server`, before the project
 settled on one name. An existing install needs no attention: on startup the
@@ -45,7 +78,7 @@ systemctl enable --now games-galore-server
 ## Expected library layout
 
 ```
-<LIBRARY_ROOT>/
+<each LIBRARY_ROOTS entry>/
   PS1/  PS2/  PC/  Switch/
     <Game Title>/
       *.bin/*.cue | *.iso | *.nsz | *.nsp            <- game file(s)
@@ -106,7 +139,10 @@ rather than deciding for you here.
 - `GET /download/<platform>/<title>/<filename>` — a game file. If it's already
   `.nsp` (or any non-Switch format), it's streamed as-is. If it's `.nsz`, it's
   decompressed first — see below.
-- `GET /status` — whether `nsz` is installed on this machine, and its version.
+- `GET /status` — whether `nsz` is installed on this machine and its version,
+  plus each library drive with the room left on it and how many games it holds.
+  The client shows that under "Library server" in Settings, so a drive filling
+  up is visible from the sofa rather than over ssh.
   The client checks this before offering to install any Switch title, rather
   than finding out mid-transfer.
 - `GET /saves/<platform>/<title>` — stored save versions, newest first, with

@@ -118,6 +118,16 @@ fn save_states(app: &AppHandle, states: &InstallMap) -> Result<(), String> {
 /// starting, finishing, failing, or being cleared. Progress within an
 /// install goes through emit_progress instead; see there for why.
 fn set_status(app: &AppHandle, id: &str, status: InstallStatus) -> Result<(), String> {
+    // The transitions worth a line in the log are the ones worth
+    // persisting, which is exactly the set that reaches here.
+    match &status {
+        InstallStatus::Installed { local_dir } => {
+            crate::log_line!("installed {id} in {}", local_dir.display())
+        }
+        InstallStatus::Failed { message } => crate::log_line!("install of {id} failed: {message}"),
+        _ => {}
+    }
+
     let mut states = load_states(app);
     states.insert(id.to_string(), status.clone());
     save_states(app, &states)?;
@@ -156,6 +166,39 @@ pub fn get_install_states(app: AppHandle) -> InstallMap {
     load_states(&app)
 }
 
+/// How much room each install directory has, for Settings to show
+/// beside it.
+///
+/// Reported rather than judged: the screen that lists the drives is
+/// the one place where "this one is nearly full" is worth knowing
+/// before an install fails rather than after. `available` is None for
+/// a path that can't be read at all, which is how an unmounted drive
+/// or a typo shows up as something other than a drive with no room.
+#[derive(Serialize)]
+pub struct RootSpace {
+    pub path: String,
+    pub available: Option<u64>,
+    pub available_text: Option<String>,
+    pub exists: bool,
+}
+
+#[tauri::command]
+pub fn install_root_space(app: AppHandle) -> Vec<RootSpace> {
+    crate::settings::get_settings(app)
+        .roots()
+        .into_iter()
+        .map(|root| {
+            let available = available_bytes(&root);
+            RootSpace {
+                path: root.to_string_lossy().to_string(),
+                available,
+                available_text: available.map(human_bytes),
+                exists: root.exists(),
+            }
+        })
+        .collect()
+}
+
 /// The ids currently on disk, for the catalog cache to scope itself
 /// to. Reads the same installs.json everything else here does, so the
 /// two files can never disagree about what is installed.
@@ -173,18 +216,87 @@ pub fn installed_ids(app: &AppHandle) -> HashSet<String> {
 /// clean up a download whose owning install_game call isn't running
 /// anymore at all — e.g. the app was closed mid-download and relaunched
 /// — since there's no live task left to ask, only the id and settings.
-pub fn install_dir_for(install_root: &str, game_id: &str) -> Option<PathBuf> {
+pub fn install_dir_for(install_root: &Path, game_id: &str) -> Option<PathBuf> {
     let (platform, title) = game_id.split_once('/')?;
-    Some(Path::new(install_root).join(platform).join(title))
+    Some(install_root.join(platform).join(title))
+}
+
+/// Where a game's files already are, across every configured drive.
+///
+/// The layout under each root is the same, so a title is found by
+/// looking for its directory rather than by recording which drive it
+/// went to: a drive can be added, reordered or removed from Settings
+/// without any of that becoming a lie about the disk.
+pub fn existing_install_dir(roots: &[PathBuf], game_id: &str) -> Option<PathBuf> {
+    roots
+        .iter()
+        .filter_map(|root| install_dir_for(root, game_id))
+        .find(|dir| dir.exists())
+}
+
+/// Which drive this install should land on.
+///
+/// A title that is already on one of them stays there — that is what
+/// makes a resumed download continue where its part-files are, and a
+/// reinstall land on top of itself rather than beside itself on
+/// another drive. Otherwise it goes wherever there is the most room,
+/// which spreads a library across drives without anybody deciding
+/// anything, and keeps the emptiest drive as the one with room for
+/// whatever comes next.
+///
+/// A drive whose free space can't be read (unmounted, a typo) is
+/// passed over while another drive can take the title, and used as a
+/// last resort if none can — refusing to install because a path looks
+/// odd would be worse than trying it and letting the write fail.
+fn choose_root(roots: &[PathBuf], game_id: &str, needed: u64) -> Result<PathBuf, String> {
+    choose_root_with(roots, game_id, needed, available_bytes)
+}
+
+/// The decision itself, with the free-space question handed in so the
+/// tests can pose a full drive without needing one.
+fn choose_root_with(
+    roots: &[PathBuf],
+    game_id: &str,
+    needed: u64,
+    space: impl Fn(&Path) -> Option<u64>,
+) -> Result<PathBuf, String> {
+    if roots.is_empty() {
+        return Err("no install directory is set in Settings".to_string());
+    }
+
+    if let Some(existing) = existing_install_dir(roots, game_id) {
+        return Ok(existing);
+    }
+
+    let candidates: Vec<(PathBuf, Option<u64>)> = roots
+        .iter()
+        .filter_map(|root| install_dir_for(root, game_id).map(|dir| (dir, space(root))))
+        .collect();
+
+    let roomiest = candidates
+        .iter()
+        .filter(|(_, available)| available.is_none_or(|a| a >= needed))
+        .max_by_key(|(_, available)| available.unwrap_or(0));
+
+    match roomiest {
+        Some((dir, _)) => Ok(dir.clone()),
+        None => Err(format!(
+            "not enough room for this on any install directory: it needs about {}, and {}",
+            human_bytes(needed),
+            candidates
+                .iter()
+                .map(|(dir, available)| match available {
+                    Some(bytes) => format!("{} has {}", dir.display(), human_bytes(*bytes)),
+                    None => format!("{} could not be read", dir.display()),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 #[tauri::command]
-pub async fn install_game(
-    app: AppHandle,
-    game: Game,
-    server_base: String,
-    install_root: String,
-) -> Result<(), String> {
+pub async fn install_game(app: AppHandle, game: Game, server_base: String) -> Result<(), String> {
     if game.files.is_empty() {
         let message = "no files found for this game".to_string();
         set_status(
@@ -207,20 +319,38 @@ pub async fn install_game(
         return Ok(()); // cancelled while it sat in the queue
     }
 
-    let dest_dir = Path::new(&install_root)
-        .join(&game.platform)
-        .join(&game.title);
+    // Which drive, decided here rather than passed in: the frontend
+    // knows what someone clicked on, not which disk has room for it.
+    let needed = required_bytes(&game.files);
+    let dest_dir = match choose_root(
+        &crate::settings::get_settings(app.clone()).roots(),
+        &game.id,
+        needed,
+    ) {
+        Ok(dir) => dir,
+        Err(message) => {
+            set_status(
+                &app,
+                &game.id,
+                InstallStatus::Failed {
+                    message: message.clone(),
+                },
+            )?;
+            return Err(message);
+        }
+    };
     fs::create_dir_all(&dest_dir)
         .await
         .map_err(|e| e.to_string())?;
+    crate::log_line!("installing {} to {}", game.id, dest_dir.display());
 
-    // Checked after the directory exists, so statvfs reports the
-    // filesystem the files will actually land on rather than whatever
-    // the nearest existing ancestor happens to be. Filling a disk is a
+    // Asked again of the directory that now exists, rather than of the
+    // drive it sits on: a root can be a symlink onto another
+    // filesystem, or have a mount point beneath it, and this is the
+    // filesystem the files will actually land on. Filling a disk is a
     // slow, noisy failure that takes the rest of the system down with
     // it; refusing up front costs one syscall.
     if let Some(available) = available_bytes(&dest_dir) {
-        let needed = required_bytes(&game.files);
         if available < needed {
             let message = format!(
                 "not enough room in {}: this needs about {}, and {} is free",
@@ -339,11 +469,24 @@ pub async fn install_game(
 // rather than the code being narrowed to it.
 #[cfg(unix)]
 #[allow(clippy::useless_conversion)]
-fn available_bytes(dir: &Path) -> Option<u64> {
+pub fn available_bytes(dir: &Path) -> Option<u64> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
 
-    let path = CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // A drive that has never been installed to has no directory yet,
+    // and statvfs answers about paths rather than intentions. Walking
+    // up to the nearest existing ancestor asks about the filesystem
+    // the directory would be created on, which is the question being
+    // asked — including the uncomfortable case of a mount point with
+    // nothing mounted on it, where the bytes really would land on the
+    // filesystem underneath. None is left for the paths that answer
+    // nothing at all, and callers read it as "unknown", not "full".
+    let mut existing = dir;
+    while !existing.exists() {
+        existing = existing.parent()?;
+    }
+
+    let path = CString::new(existing.as_os_str().as_bytes()).ok()?;
     // SAFETY: `path` is a valid NUL-terminated string that outlives the
     // call, and `stat` is a zeroed statvfs of the right type. statvfs
     // writes only into it and returns a status we check.
@@ -359,7 +502,7 @@ fn available_bytes(dir: &Path) -> Option<u64> {
 }
 
 #[cfg(not(unix))]
-fn available_bytes(_dir: &Path) -> Option<u64> {
+pub fn available_bytes(_dir: &Path) -> Option<u64> {
     None
 }
 
@@ -926,16 +1069,18 @@ pub fn uninstall_game(app: AppHandle, game_id: String) -> Result<(), String> {
 /// running; the unconditional cleanup that follows handles the case
 /// where it isn't.
 #[tauri::command]
-pub fn cancel_install(app: AppHandle, game_id: String, install_root: String) -> Result<(), String> {
+pub fn cancel_install(app: AppHandle, game_id: String) -> Result<(), String> {
     cancelled_downloads()
         .lock()
         .unwrap()
         .insert(game_id.clone());
 
-    if let Some(dir) = install_dir_for(&install_root, &game_id) {
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
+    // Every drive, since which one the download went to is a fact
+    // about the disk rather than about whatever Settings currently
+    // lists first.
+    let roots = crate::settings::get_settings(app.clone()).roots();
+    if let Some(dir) = existing_install_dir(&roots, &game_id) {
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     crate::catalog_cache::forget(&app, &game_id);
@@ -982,6 +1127,130 @@ pub fn extract_error_detail(html_body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two throwaway install directories, as two drives would look.
+    fn two_roots(name: &str) -> (PathBuf, Vec<PathBuf>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        let base = std::env::temp_dir().join(format!(
+            "gg-roots-test-{}-{}-{name}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let roots = vec![base.join("drive-a"), base.join("drive-b")];
+        for root in &roots {
+            std::fs::create_dir_all(root).unwrap();
+        }
+        (base, roots)
+    }
+
+    #[test]
+    fn a_title_already_on_a_drive_is_reinstalled_onto_itself() {
+        let (base, roots) = two_roots("existing");
+        let already = roots[1].join("PC").join("Ferrofluid");
+        std::fs::create_dir_all(&already).unwrap();
+
+        // Not the roomiest drive, not the first one listed: the one
+        // holding the files, so a resumed download finds its parts and
+        // a reinstall doesn't leave a second copy behind.
+        assert_eq!(choose_root(&roots, "PC/Ferrofluid", 1024).unwrap(), already);
+        assert_eq!(existing_install_dir(&roots, "PC/Ferrofluid"), Some(already));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Free space by drive, for the decisions that shouldn't need a
+    /// real disk to test. Anything unlisted reads as unknown.
+    fn with_space(known: Vec<(PathBuf, u64)>) -> impl Fn(&Path) -> Option<u64> {
+        move |path: &Path| {
+            known
+                .iter()
+                .find(|(root, _)| root == path)
+                .map(|(_, bytes)| *bytes)
+        }
+    }
+
+    #[test]
+    fn a_new_title_goes_to_the_drive_with_the_most_room() {
+        let (base, roots) = two_roots("new");
+        let space = with_space(vec![
+            (roots[0].clone(), 20 * 1024 * 1024 * 1024),
+            (roots[1].clone(), 400 * 1024 * 1024 * 1024),
+        ]);
+        let chosen = choose_root_with(&roots, "PC/Ferrofluid", 1024, space).unwrap();
+        assert_eq!(chosen, roots[1].join("PC").join("Ferrofluid"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_drive_without_the_room_is_passed_over_however_it_is_listed() {
+        let (base, roots) = two_roots("tight");
+        let needed = 30 * 1024 * 1024 * 1024;
+        let space = with_space(vec![
+            (roots[0].clone(), 900 * 1024 * 1024), // nearly full
+            (roots[1].clone(), 50 * 1024 * 1024 * 1024),
+        ]);
+        let chosen = choose_root_with(&roots, "PC/Ferrofluid", needed, space).unwrap();
+        assert_eq!(chosen, roots[1].join("PC").join("Ferrofluid"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_drive_whose_room_is_unknown_is_a_last_resort_rather_than_a_first_choice() {
+        let (base, roots) = two_roots("unknown");
+        // Only the second drive answers: it takes the title while it
+        // has the room...
+        let space = with_space(vec![(roots[1].clone(), 50 * 1024 * 1024 * 1024)]);
+        assert_eq!(
+            choose_root_with(&roots, "PC/Ferrofluid", 1024, space).unwrap(),
+            roots[1].join("PC").join("Ferrofluid")
+        );
+
+        // ...and the silent one is tried rather than refused when it
+        // doesn't. A path that reads as nothing is a question mark,
+        // not a full disk, and failing the write says more than
+        // guessing here would.
+        let tight = with_space(vec![(roots[1].clone(), 1024)]);
+        assert_eq!(
+            choose_root_with(&roots, "PC/Ferrofluid", 50 * 1024 * 1024 * 1024, tight).unwrap(),
+            roots[0].join("PC").join("Ferrofluid")
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_title_too_big_for_every_drive_is_refused_by_name() {
+        let (base, roots) = two_roots("full");
+        let space = with_space(vec![(roots[0].clone(), 1024), (roots[1].clone(), 2048)]);
+        let err =
+            choose_root_with(&roots, "PC/Ferrofluid", 50 * 1024 * 1024 * 1024, space).unwrap_err();
+        // The message has to say which drives were tried and what is
+        // on them, since the answer is usually "free space on one of
+        // these, or add another".
+        for root in &roots {
+            assert!(err.contains(&root.display().to_string()), "{err}");
+        }
+        assert!(err.contains("needs about"), "{err}");
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn no_install_directory_at_all_says_so() {
+        let err = choose_root(&[], "PC/Ferrofluid", 1024).unwrap_err();
+        assert!(err.contains("Settings"), "{err}");
+    }
+
+    #[test]
+    fn a_drive_reports_its_room_before_anything_is_installed_on_it() {
+        // statvfs answers about paths, and a drive that has never been
+        // used has no games directory yet — the question is about the
+        // filesystem it would be created on.
+        let (base, roots) = two_roots("unused");
+        let untouched = roots[0].join("PC").join("Ferrofluid");
+        assert!(!untouched.exists());
+        assert_eq!(available_bytes(&untouched), available_bytes(&roots[0]));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     fn progress(done: u64, total: u64) -> Progress {
         let mut p = Progress::new(total);
@@ -1317,10 +1586,10 @@ mod tests {
     #[test]
     fn install_dir_is_reconstructed_from_the_game_id() {
         assert_eq!(
-            install_dir_for("/games", "PC/Moth & Ember"),
+            install_dir_for(Path::new("/games"), "PC/Moth & Ember"),
             Some(PathBuf::from("/games/PC/Moth & Ember"))
         );
         // No platform separator means no directory can be derived.
-        assert_eq!(install_dir_for("/games", "bare-id"), None);
+        assert_eq!(install_dir_for(Path::new("/games"), "bare-id"), None);
     }
 }

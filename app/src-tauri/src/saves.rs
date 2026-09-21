@@ -121,7 +121,7 @@ fn save_sources(app: &AppHandle, game_id: &str, platform: &str) -> Result<SaveSo
                 // there is no per-game configuration to fill in: the
                 // first time a title needs its id, it gets one.
                 let detected =
-                    crate::install_state::install_dir_for(&settings.install_root, game_id)
+                    crate::install_state::existing_install_dir(&settings.roots(), game_id)
                         .and_then(|dir| detect_switch_title_id(dir.to_string_lossy().to_string()))
                         .ok_or_else(|| {
                             "couldn't work out this game's Title ID from its files — \
@@ -787,10 +787,12 @@ pub async fn upload_save(
             response.status()
         ));
     }
-    response
+    let version = response
         .json::<SaveVersion>()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    crate::log_line!("uploaded the save for {game_id} as {}", version.version);
+    Ok(version)
 }
 
 /// Replaces local save data with a stored version. The existing local

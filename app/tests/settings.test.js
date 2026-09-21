@@ -22,6 +22,14 @@ async function boot() {
       case 'fetch_library': return [];
       case 'get_install_states': return {};
       case 'check_dependency': return { present: true, version: '1.0' };
+      case 'install_root_space': return (settings.install_roots && settings.install_roots.length
+        ? settings.install_roots
+        : [settings.install_root]).map((path, i) => ({
+          path,
+          available: 1,
+          available_text: i === 0 ? '18 GB' : '900 GB',
+          exists: i === 0,
+        }));
       default: return null;
     }
   };
@@ -54,6 +62,11 @@ const press = (win, key) => win.document.dispatchEvent(
     if (visited[visited.length - 1] === el) break; // reached the end
     visited.push(el);
   }
+
+  // Logs sit at the top of the form now, so they are the first thing
+  // the walk reaches after the close button.
+  check('the first control after Close is View logs',
+        visited[0] && visited[0].id, 'view-logs');
 
   const modal = doc.querySelector('#settings-backdrop .modal');
   check('the walk stays inside the modal',
@@ -95,6 +108,48 @@ const press = (win, key) => win.document.dispatchEvent(
   press(win, 'ArrowDown');
   check('a text input can be left by arrowing down',
         doc.activeElement.id !== 'server-base-input', true);
+
+  // The drives. The fixture's settings.json has a single install_root
+  // and no list, as every one written before this did.
+  const rootRows = () => Array.from(doc.querySelectorAll('.install-root-row'));
+  check('one install directory shows as one row', rootRows().length, 1);
+  check('...with what was configured in it',
+        doc.getElementById('install-root-input').value, '/games');
+  check('...and how much room it has',
+        rootRows()[0].querySelector('[data-space]').textContent, '18 GB free');
+  check('...and nothing to remove, since removing the only one helps nobody',
+        rootRows()[0].querySelector('[data-remove-root]'), null);
+
+  // No native folder picker under jsdom, so Add offers a row to type
+  // into — the same path someone takes when they'd rather type it.
+  doc.getElementById('add-install-root').click();
+  await sleep(50);
+  check('adding a drive adds a row', rootRows().length, 2);
+  const second = rootRows()[1].querySelector('.setting-input');
+  second.value = '/mnt/games2';
+  second.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await sleep(50);
+  check('the second drive is persisted',
+        settings.install_roots, ['/games', '/mnt/games2']);
+  check('...and the first stays the primary one, where prefixes live',
+        settings.install_root, '/games');
+  check('...and the new drive reports its own free space',
+        rootRows()[1].querySelector('[data-space]').textContent,
+        '900 GB free — this directory will be created on the first install');
+
+  rootRows()[1].querySelector('[data-remove-root]').click();
+  await sleep(50);
+  check('removing a drive takes it off the list', settings.install_roots, ['/games']);
+  check('...leaving the row it came from gone', rootRows().length, 1);
+
+  // A blank row is a drive at the filesystem root, which nobody means.
+  doc.getElementById('add-install-root').click();
+  await sleep(50);
+  const blank = rootRows()[1].querySelector('.setting-input');
+  blank.value = '   ';
+  blank.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await sleep(50);
+  check('an empty row is dropped rather than stored', settings.install_roots, ['/games']);
 
   // The PC runtime switch. The fixture's settings.json has no runtime
   // field at all — as every settings.json written before Proton does —

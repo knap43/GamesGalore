@@ -123,11 +123,11 @@ def main() -> int:
     print("\n--- routes and install ---")
     import config
 
+    config.LIBRARY_ROOTS = [root]
     config.LIBRARY_ROOT = root
     config.CACHE_DIR = tmp / "cache"
     import server as srv
 
-    srv.LIBRARY_ROOT = root
     srv.CACHE_DIR = config.CACHE_DIR
     srv._reload_catalog()
     srv.app.config["SERVER_NAME"] = "testhost"
@@ -640,6 +640,93 @@ def main() -> int:
 
     srv._prune_cache(limit=10_000)
     check("a cache under its cap is untouched", new_nsp.exists(), True)
+
+    print("\n--- a library across two drives ---")
+    second = tmp / "library-2"
+    write_second = second / "PS2" / "Cobalt Drift"
+    write_second.mkdir(parents=True)
+    (write_second / "Cobalt Drift.iso").write_bytes(b"iso" * 100)
+    (write_second / "README.md").write_text("Cobalt Drift (2004)\n\nOn the other drive.")
+
+    config.LIBRARY_ROOTS = [root, second]
+    srv._reload_catalog()
+    check("a game on the second drive is in the catalog",
+          "PS2/Cobalt Drift" in srv._catalog, True)
+    check("...and the first drive's games are still there",
+          "PC/Hollow Meridian" in srv._catalog, True)
+    check("...and it is served from the drive it is on",
+          client.get("/download/PS2/Cobalt%20Drift/Cobalt%20Drift.iso").status_code, 200)
+    check("...with the right bytes", len(client.get(
+        "/download/PS2/Cobalt%20Drift/Cobalt%20Drift.iso").data), 300)
+
+    # The same title on both drives: the first one listed wins, which
+    # is what makes copying a game across while the server runs safe.
+    duplicate = second / "PC" / "Hollow Meridian"
+    duplicate.mkdir(parents=True)
+    (duplicate / "HollowMeridian.exe").write_bytes(b"x" * 10)
+    srv._reload_catalog()
+    check("a title on two drives is taken from the first",
+          srv._game_dirs["PC/Hollow Meridian"], root / "PC" / "Hollow Meridian")
+    check("...so its files are still the established ones",
+          client.get("/download/PC/Hollow%20Meridian/bin/HollowMeridian.exe").status_code, 200)
+
+    # A drive that isn't mounted is skipped rather than emptying the
+    # catalog of the drives that are.
+    config.LIBRARY_ROOTS = [root, tmp / "not-mounted"]
+    srv._reload_catalog()
+    check("an absent drive doesn't take the others with it",
+          "PC/Hollow Meridian" in srv._catalog, True)
+    check("...and its games are simply not listed",
+          "PS2/Cobalt Drift" in srv._catalog, False)
+
+    config.LIBRARY_ROOTS = [tmp / "not-mounted"]
+    try:
+        srv._reload_catalog()
+        check("every drive missing is still an error", "no error", "FileNotFoundError")
+    except FileNotFoundError:
+        check("every drive missing is still an error", True, True)
+
+    config.LIBRARY_ROOTS = [root, second]
+    srv._reload_catalog()
+    status = json.loads(client.get("/status").data)
+    check("status reports each library drive",
+          [r["path"] for r in status["library_roots"]], [str(root), str(second)])
+    check("...with the room left on it",
+          all(r["free_bytes"] > 0 for r in status["library_roots"]), True)
+    check("...and how many games each holds",
+          [r["games"] > 0 for r in status["library_roots"]], [True, True])
+
+    # The metadata fetcher writes into the folder the game is actually
+    # in, which on a second drive is a different drive entirely.
+    far = second / "PS1" / "Distant Signal"
+    far.mkdir(parents=True)
+    (far / "Distant Signal.cue").write_bytes(b"CUE")
+    srv._reload_catalog()
+
+    r = client.post("/metadata/PS1/Distant%20Signal")
+    check("a game on the second drive can be filled in", r.status_code, 200)
+    check("...and its files land on that drive",
+          sorted(f.name for f in far.iterdir() if f.name != "Distant Signal.cue"),
+          ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
+           "screenshot-02.jpg", "trailer.mp4"])
+    check("...rather than on the first one",
+          (root / "PS1" / "Distant Signal").exists(), False)
+    check("...and the catalog picks the description up from there",
+          bool(srv._catalog["PS1/Distant Signal"].description), True)
+
+    # The library-wide pass covers every drive, not just the first.
+    far_two = second / "PS1" / "Second Signal"
+    far_two.mkdir(parents=True)
+    (far_two / "Second Signal.cue").write_bytes(b"CUE")
+    srv._reload_catalog()
+    filled = {entry["title"] for entry in client.post("/metadata").get_json()["results"]}
+    check("a library-wide fetch reaches the second drive",
+          "Second Signal" in filled, True)
+    check("...writing there too", (far_two / "cover.jpg").exists(), True)
+
+    shutil.rmtree(second, ignore_errors=True)
+    config.LIBRARY_ROOTS = [root]
+    srv._reload_catalog()
 
     print("\n--- refusals ---")
     check("path traversal refused",

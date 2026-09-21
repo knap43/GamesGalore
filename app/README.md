@@ -14,7 +14,8 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `catalog_cache.rs` | `installed-cache.json` beside it: the catalog entries for installed titles, so the shelf is on screen at launch without waiting on the server. See **Starting up before the server answers** below. |
 | `launcher.rs` | `launch_game` — spawns the configured emulator for a platform, detached, in fullscreen. Resolves which file to hand it by searching the install directory recursively, and `list_launch_candidates` backs the UI's picker for titles with more than one; see below. |
 | `dependencies.rs` | `check_dependency` — whether a configured emulator is actually present, so a missing tool surfaces in Settings rather than mid-Play. Flatpak-aware; see below. |
-| `settings.rs` | `settings.json` alongside `installs.json`: server address, install root, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
+| `logs.rs` | The last few hundred lines this session has printed — the app's own, and each running game's, tailed out of the file its output is redirected into — kept in memory and pushed to the frontend as they happen. See **Logs** below. |
+| `settings.rs` | `settings.json` alongside `installs.json`: server address, the install directories, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
 | `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
 | `server.rs` (`fetch_metadata`, `rescan_library`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button, and to rescan afterwards. The work happens on the server, which is the machine holding the library. |
 | `playtime.rs` | `playtime.json` beside them: seconds played, last played and a session count per game, recorded by the launcher. See **Playtime** below. |
@@ -165,6 +166,36 @@ out, so a converting file is budgeted at twice its listed size, plus a
 made — not Unix, unreadable path — it is skipped rather than treated as
 a refusal.
 
+**A choice of drive**, made from the same numbers. Settings holds a
+list of install directories rather than one, and `choose_root` decides
+per install:
+
+1. A title already sitting under one of them stays there. That is what
+   makes a resumed download find its own part-files and a reinstall
+   land on top of itself rather than beside itself on another drive.
+2. Otherwise it goes to the drive with the most room. A library spreads
+   itself across drives with nobody deciding anything, and the drive
+   with space stays the one with space for whatever comes next.
+3. If it fits nowhere, the refusal names every drive and what each has
+   left, because the answer is usually "free some here, or add
+   another".
+
+A drive whose free space can't be read at all is passed over while
+another can take the title, and tried as a last resort when none can:
+an unreadable path is a question mark, not a full disk, and the write
+failing says more than a guess here would. The choice is made in the
+backend rather than passed in from the UI — the frontend knows what
+someone clicked, not which disk has room for it — which is why
+`install_game` and `cancel_install` take no install root any more.
+
+Where a game *is* stays a fact about the disk: `existing_install_dir`
+looks for `<root>/<platform>/<title>` across every configured drive, so
+drives can be added, reordered or removed without any record becoming a
+lie. Removing a drive from the list leaves its games where they are; it
+only stops being offered for new installs. Nothing moves games between
+drives — that is `mv` and a rescan, and doing it behind someone's back
+would be the wrong kind of clever.
+
 **Verification of what arrived.** A stream can end early without
 erroring at all: a dropped connection, a server that died mid-response.
 That writes a short file, reports success, and surfaces weeks later as
@@ -301,8 +332,11 @@ runtime installs and registry state, and — more usefully — a game's prefix
 *becomes* its save data, which is what makes cloud saves work for PC without a
 per-game manifest of where each game hides its saves.
 
-Prefixes default to `.wine-prefixes` beside the install root, so this needs no
-configuration; `prefix_root` in settings overrides the location. Wine creates a
+Prefixes default to `.wine-prefixes` beside the *first* install directory, so
+this needs no configuration; `prefix_root` in settings overrides the location.
+They stay there when a game is installed on another drive: a prefix is the
+game's save data, and moving one because the list of drives changed would lose
+saves. Wine creates a
 missing prefix itself on first run, which makes the first launch of a title slow
 and every one after it normal.
 
@@ -335,6 +369,61 @@ Prefix paths are resolved to absolute before they reach either runtime. A
 relative install root was always questionable — it meant something different
 depending on where the app was started from — and umu refuses a `WINEPREFIX`
 that isn't absolute outright.
+
+### Logs
+
+The app's own output used to go to stderr and nowhere else. That is fine when
+it was started from a terminal and useless when it was started from the
+applications menu — which is exactly the case where "it didn't launch and I
+don't know why" happens, with the answer sitting in the journal.
+
+`logs.rs` keeps the last 500 lines in a ring buffer and pushes each new one to
+the frontend as `log:line`; **View logs**, at the top of Settings, opens a
+window showing them live, with a Copy button for pasting into a bug report. `log_line!` is
+`eprintln!` that also records, so the terminal still sees everything it did.
+Panics are routed through it as well, ahead of the default hook — a panic is
+the single most useful thing a log can contain.
+
+The log contains this app's own account of itself — the command each game was
+launched with, where each install went and how it ended, prefix folders brought
+in, saves uploaded — **and the game's own output**, prefixed with its title.
+
+That second part takes the long way round on purpose. A pipe would have been the
+obvious way to capture a child's output and the wrong one: once nothing is
+reading a pipe, the next write to it kills the writer, so closing Games Galore
+would start taking running games down with it — exactly the property the
+detached launch exists to preserve. So the game's streams are redirected into a
+file under `game-output/` in the app data directory instead. A file descriptor
+onto a file needs nobody alive to stay valid, and every process the emulator
+starts inherits it, which matters under Wine where the thing that actually
+prints is several processes below the command that was run. `logs::follow` then
+tails that file for as long as the session lasts, and reads it once more
+afterwards, since a game most often says why on its way out.
+
+Three consequences worth knowing:
+
+- **The full output is always on disk**, ten runs deep, whatever the window
+  shows. `logs::prune_runs` sweeps the rest.
+- **A flood is summarised rather than shown.** A game logging every frame would
+  empty a 500-line buffer in seconds, so at most 120 lines per poll reach the
+  window, preceded by a line saying how many were skipped and naming the file
+  that has them all.
+- **A game that printed nothing leaves nothing behind**: an empty output file is
+  deleted when the session ends.
+
+`\r` counts as a line ending alongside `\n`, so a progress bar redrawing itself
+in place reads as successive lines rather than one endless one.
+
+The window follows the tail only when it is already at the bottom, so reading
+something further up while a game logs away doesn't yank the view.
+
+### The server's drives
+
+`GET /status` reports each of the server's library drives, whether it is
+mounted, how much room is left on it and how many games it holds. The **Check**
+button beside "Library server" in Settings shows that under the row. The
+library lives on that machine's disks, so this is a fact only it knows, and
+finding it out by sshing in is what this saves.
 
 ### Cloud saves
 
@@ -729,7 +818,9 @@ and fill in:
   so the count on screen is real; a single game can be done from its own page.
 - **Library server address** — the library server machine's LAN address, e.g.
   `http://192.168.1.20:8420`
-- **Install directory** — use the Browse button; it's a real native folder picker
+- **Install directories** — use the Browse button; it's a real native folder
+  picker. "Add another drive" adds a second (or third): each row shows how much
+  room that drive has left, and installs go wherever there is the most of it
 - **Each emulator's command/args** — see below, including PC's choice of Wine
   or Proton
 
