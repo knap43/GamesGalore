@@ -454,11 +454,18 @@ in place reads as successive lines rather than one endless one.
 The window follows the tail only when it is already at the bottom, so reading
 something further up while a game logs away doesn't yank the view.
 
-### The server's drives
+### The server's keys and drives
 
-`GET /status` reports each of the server's library drives, whether it is
-mounted, how much room is left on it and how many games it holds. The **Check**
-button beside "Library server" in Settings shows that under the row. The
+`GET /status` reports whether the server has Switch keys it can read (and which
+file it will use), plus each of its library drives: whether it is mounted, how
+much room is left on it and how many games it holds. The **Check** button beside
+"Library server" in Settings shows all of that under the row.
+
+The keys are worth the space they take here. nsz finds `prod.keys` relative to
+the HOME of whoever runs it, and the server runs as its own account, so keys
+that work when someone decompresses by hand are invisible to the service — a
+failure that otherwise surfaces as a 500 with a Python traceback in it, halfway
+through installing a Switch title. The
 library lives on that machine's disks, so this is a fact only it knows, and
 finding it out by sshing in is what this saves.
 

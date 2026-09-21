@@ -1398,6 +1398,7 @@
             <span class="setting-desc" style="margin:0;">Checks whether the server itself has <code>nsz</code> available for Switch conversions, and how much room is left on its library drives.</span>
             <button class="browse-button emu-check" type="button" data-check="server-nsz">Check</button>
           </div>
+          <div class="setting-desc" id="server-keys" style="margin:8px 0 0;"></div>
           <div class="setting-desc" id="server-library-roots" style="margin:8px 0 0;"></div>
         </div>
       </div>
@@ -2692,14 +2693,39 @@ async function checkServerNsz() {
   statusEl.className = 'dependency-status checking';
   try {
     const result = await TAURI.core.invoke('fetch_server_status', { serverBase: state.serverBase });
-    statusEl.textContent = result.nsz_found ? (result.nsz_version ? `Found · ${result.nsz_version}` : 'Found') : 'Not found on server';
-    statusEl.className = `dependency-status ${result.nsz_found ? 'found' : 'missing'}`;
+    // nsz and the Switch keys fail as a pair: nsz without keys
+    // converts nothing, and used to say so only once a download was
+    // already under way.
+    const ready = result.nsz_found && result.keys_found !== false;
+    statusEl.textContent = !result.nsz_found
+      ? 'Not found on server'
+      : result.keys_found === false
+      ? 'No prod.keys'
+      : (result.nsz_version ? `Found · ${result.nsz_version}` : 'Found');
+    statusEl.className = `dependency-status ${ready ? 'found' : 'missing'}`;
+    renderServerKeys(result);
     renderServerLibraryRoots(result.library_roots);
   } catch (err) {
     statusEl.textContent = 'Server unreachable';
     statusEl.className = 'dependency-status missing';
+    renderServerKeys(null);
     renderServerLibraryRoots(null);
   }
+}
+
+/* Whether the server can actually decompress a Switch title. The keys
+   live on that machine, under whichever account runs the service —
+   which is exactly why "it works when I run nsz myself" and "it fails
+   through the app" are both true at once. */
+function renderServerKeys(result) {
+  const el = document.getElementById('server-keys');
+  if (!result || result.keys_found === undefined) { el.innerHTML = ''; return; }
+  el.innerHTML = result.keys_found
+    ? `Switch keys: <code>${result.keys_path}</code>`
+    : `No Switch keys the server can read — looked in <code>${result.keys_searched}</code>. `
+      + 'Set <code>KEYS_FILE</code> in its <code>config.py</code>, or '
+      + '<code>NSZ_KEYS</code> in its environment, to a <code>prod.keys</code> the '
+      + "account running the server can read. Switch titles won't install until then.";
 }
 
 /* The server's own drives, as it reports them. The library lives on

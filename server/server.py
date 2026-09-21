@@ -27,9 +27,11 @@ import hashlib
 import hmac
 import io
 import json
+import os
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -351,6 +353,98 @@ def archive_route(platform: str, title: str):
     )
 
 
+KEY_NAMES = ("prod.keys", "keys.txt")
+
+
+def keys_file() -> Optional[Path]:
+    """
+    The Switch keys nsz should use, or None if there are none to find.
+
+    nsz looks for keys relative to the HOME of whoever runs it, which
+    is why decompressing by hand works while the same title fails
+    through this server: the systemd unit runs as its own system user,
+    whose home is not the one holding the prod.keys that works. So the
+    path is resolved here, by this process, and handed to nsz
+    explicitly rather than left to be discovered.
+
+    KEYS_FILE in config.py (or NSZ_KEYS in the environment) wins, as a
+    file or as a directory holding one. After that, the places someone
+    would have put them anyway.
+    """
+    configured = str(getattr(config, "KEYS_FILE", "") or "").strip()
+    candidates = []
+    if configured:
+        path = Path(configured).expanduser()
+        candidates.extend([path / name for name in KEY_NAMES] if path.is_dir() else [path])
+
+    home = Path.home()
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    for directory in (
+        home / ".switch",
+        Path(xdg) / "nsz" if xdg else home / ".config" / "nsz",
+        Path("/etc/games-galore"),
+    ):
+        candidates.extend(directory / name for name in KEY_NAMES)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _searched_for_keys() -> str:
+    """Where to look, for an error message that ends the search."""
+    configured = str(getattr(config, "KEYS_FILE", "") or "").strip()
+    if configured:
+        return configured
+    return "~/.switch/, ~/.config/nsz/ or /etc/games-galore/"
+
+
+def _conversion_error(stderr: str, keys: Optional[Path]) -> str:
+    """
+    nsz's own words, unless they are the ones that need translating.
+
+    "Could not load keys file" is the failure someone will meet, and
+    on its own it says nothing about why nsz can see the keys from a
+    shell and not from here.
+    """
+    message = (stderr or "").strip()
+    if "keys file" not in message.lower():
+        return f"nsz conversion failed: {message}"
+
+    if keys is None:
+        return (
+            "nsz could not find the Switch keys. Looked in "
+            f"{_searched_for_keys()}. Set KEYS_FILE in the server's config.py "
+            "(or NSZ_KEYS in its environment) to a prod.keys this server's "
+            "user can read — the one in your own home directory is not "
+            "readable by the account the service runs as."
+        )
+    return (
+        f"nsz could not use the keys at {keys}: {message}. Check that the "
+        "account running this server can read that file and that it is a "
+        "current prod.keys."
+    )
+
+
+def _legacy_keys_home(keys: Path):
+    """
+    A HOME for an nsz too old to understand --keys.
+
+    That version reads $HOME/.switch/prod.keys and nowhere else useful,
+    so it gets a directory shaped like that, with a link to the real
+    keys in it. Deleted with the context manager; nothing is copied.
+    """
+    directory = tempfile.TemporaryDirectory(prefix="games-galore-keys-")
+    switch = Path(directory.name) / ".switch"
+    switch.mkdir()
+    try:
+        (switch / "prod.keys").symlink_to(keys)
+    except OSError:
+        shutil.copy2(keys, switch / "prod.keys")
+    return directory
+
+
 def _get_or_convert(game_id: str, nsz_path: Path) -> Path:
     """
     Converts nsz_path once and caches the .nsp under CACHE_DIR, keyed by
@@ -367,13 +461,32 @@ def _get_or_convert(game_id: str, nsz_path: Path) -> Path:
     if shutil.which("nsz") is None:
         abort(503, "nsz is not installed on this server")
 
-    result = subprocess.run(
-        ["nsz", "-D", "--output", str(cache_dir), str(nsz_path)],
-        capture_output=True,
-        text=True,
-    )
+    keys = keys_file()
+    command = ["nsz", "-D", "--output", str(cache_dir)]
+    if keys is not None:
+        command += ["--keys", str(keys)]
+    command.append(str(nsz_path))
+
+    result = subprocess.run(command, capture_output=True, text=True)
+
+    # An nsz old enough not to know --keys reads $HOME/.switch instead,
+    # so it gets a HOME shaped that way rather than a hard failure over
+    # an argument.
+    if (
+        result.returncode != 0
+        and keys is not None
+        and "unrecognized arguments" in (result.stderr or "")
+    ):
+        with _legacy_keys_home(keys) as home:
+            result = subprocess.run(
+                ["nsz", "-D", "--output", str(cache_dir), str(nsz_path)],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "HOME": home},
+            )
+
     if result.returncode != 0:
-        abort(500, f"nsz conversion failed: {result.stderr.strip()}")
+        abort(500, _conversion_error(result.stderr, keys))
     if not cached_nsp.exists():
         abort(500, "nsz reported success but no .nsp file was produced")
 
@@ -543,9 +656,16 @@ def status_route():
     if nsz_path:
         result = subprocess.run(["nsz", "--version"], capture_output=True, text=True)
         version = (result.stdout or result.stderr).strip()
+    keys = keys_file()
     return jsonify({
         "nsz_found": nsz_path is not None,
         "nsz_version": version,
+        # Reported alongside nsz itself because they fail as a pair: an
+        # nsz with no keys converts nothing, and says so only once a
+        # download has already started.
+        "keys_found": keys is not None,
+        "keys_path": str(keys) if keys else None,
+        "keys_searched": _searched_for_keys(),
         "library_roots": _library_root_status(),
     })
 

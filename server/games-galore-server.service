@@ -11,6 +11,12 @@ Restart=on-failure
 RestartSec=5
 User=games-galore
 StateDirectory=games-galore-server
+# Switch keys, if this library has .nsz files in it. nsz looks for
+# prod.keys relative to HOME, and this unit's HOME is this user's, not
+# yours — so point it at a file this account can read rather than
+# wondering why decompressing by hand works and through the server
+# does not.
+#Environment=NSZ_KEYS=/etc/games-galore/prod.keys
 
 [Install]
 WantedBy=multi-user.target

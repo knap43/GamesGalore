@@ -80,6 +80,22 @@ LEGACY_SAVE_ROOT = Path.home() / ".local" / "share" / "vault-server" / "saves"
 # /rescan forces one immediately.
 CATALOG_TTL_SECONDS = 10 * 60
 
+# Where nsz should look for the Switch keys, as a file or a directory
+# holding prod.keys/keys.txt. Empty means the usual places:
+# ~/.switch/, ~/.config/nsz/ (or $XDG_CONFIG_HOME/nsz/), and
+# /etc/games-galore/.
+#
+# This matters more than it looks. nsz finds keys relative to the HOME
+# of whoever runs it, and the systemd unit runs this server as its own
+# system user — whose home is not the one holding the prod.keys that
+# works when you run nsz by hand. Point this at a readable absolute
+# path and the two stop disagreeing:
+#
+#   KEYS_FILE = Path("/etc/games-galore/prod.keys")
+#
+# or, for the unit, Environment=NSZ_KEYS=/etc/games-galore/prod.keys
+KEYS_FILE = os.environ.get("NSZ_KEYS", "")
+
 # RAWG (https://rawg.io/apidocs) is where the metadata fetcher gets
 # descriptions, cover art, screenshots and trailers. A free key is
 # instant and generous enough for a personal library.

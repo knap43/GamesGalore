@@ -22,6 +22,32 @@ python3 -m venv .venv
 Edit `config.py`: set `LIBRARY_ROOTS` to the actual mount point(s) and
 `CACHE_DIR` to wherever converted `.nsp` files should be cached.
 
+### Switch keys
+
+Decompressing a `.nsz` needs `prod.keys`, and nsz finds them relative to the
+HOME of whoever runs it. That is why "it decompresses fine when I do it by
+hand" and "the server returns 500: Could not load keys file" are both true at
+once: the unit runs as its own system user, whose home is not the one holding
+your keys.
+
+The server therefore resolves the path itself and hands it to nsz with
+`--keys`, rather than leaving it to be discovered. Point `KEYS_FILE` at a file
+(or a directory holding `prod.keys`/`keys.txt`) that the service's account can
+read:
+
+```python
+KEYS_FILE = Path("/etc/games-galore/prod.keys")
+```
+
+or, in the unit, `Environment=NSZ_KEYS=/etc/games-galore/prod.keys`. Left empty,
+it looks in `~/.switch/`, `~/.config/nsz/` (or `$XDG_CONFIG_HOME/nsz/`) and
+`/etc/games-galore/` — of that user's home, which is the trap above.
+
+`GET /status` reports which file it will use, and the client shows it under
+"Library server" in Settings, so a missing key file is visible before a
+download fails rather than after. An nsz too old to understand `--keys` is
+handled too: the retry hands it a HOME with the keys where that version looks.
+
 ### More than one drive
 
 `LIBRARY_ROOTS` is a list, so a library that has outgrown its disk simply gains
@@ -140,7 +166,8 @@ rather than deciding for you here.
   `.nsp` (or any non-Switch format), it's streamed as-is. If it's `.nsz`, it's
   decompressed first — see below.
 - `GET /status` — whether `nsz` is installed on this machine and its version,
-  plus each library drive with the room left on it and how many games it holds.
+  whether it has Switch keys it can read and which file it will use, plus each
+  library drive with the room left on it and how many games it holds.
   The client shows that under "Library server" in Settings, so a drive filling
   up is visible from the sofa rather than over ssh.
   The client checks this before offering to install any Switch title, rather
