@@ -166,6 +166,33 @@ out, so a converting file is budgeted at twice its listed size, plus a
 made — not Unix, unreadable path — it is skipped rather than treated as
 a refusal.
 
+**Records reconciled against the disk**, at startup and whenever the
+list of install directories changes. `installs.json` is this app's
+memory of what it installed, and memory is not the disk: a game copied
+in by hand, a drive added with games already on it, an `installs.json`
+lost with an app-data directory — all of those are games somebody has
+and this app has never heard of, and all of them used to read as not
+installed, which meant missing from the Installed filter and offering
+to download something already there.
+
+`reconcile_installs` walks each root exactly two levels deep — the
+layout is `<root>/<platform>/<title>` — and adopts what it finds.
+Three rules keep it honest:
+
+- **A directory with nothing in it is a leftover, not a game.** A
+  failed install can leave one behind, and putting a Play button on
+  an empty directory helps nobody.
+- **A download in progress or a failure is left alone.** Those
+  directories are half a game, and there the record is the more
+  truthful of the two.
+- **A game recorded as installed with nothing on disk is dropped, but
+  only when some install directory is actually readable.** An unplugged
+  drive makes its games unreachable, not uninstalled.
+
+Hidden directories are skipped, which is what keeps `.wine-prefixes` —
+which sits beside the games by default — from being read as a platform
+full of titles.
+
 **A choice of drive**, made from the same numbers. Settings holds a
 list of install directories rather than one, and `choose_root` decides
 per install:

@@ -185,5 +185,48 @@ const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
           'game.bin — 50% · 3.0 MB/s · 1h 15m left');
   }
 
+  // === games already on disk ========================================
+  // installs.json is this app's memory; the install directories are
+  // the fact. A game copied in by hand, or sitting on a drive that has
+  // just been added, is installed whether or not it was installed from
+  // here — and has to be there under the Installed filter, which is
+  // the shelf people play from.
+  {
+    const rt = createRuntime();
+    let reconciled = false;
+    const invoke = async (cmd) => {
+      switch (cmd) {
+        case 'get_settings': return {
+          server_base: 'http://x:8420', install_root: '/games', sound_enabled: false,
+          install_roots: ['/games'], emulators: {}, launch_overrides: {}, prefix_root: '',
+          save_sync: { enabled: false, device_name: 'test', switch_data_dir: null, title_ids: {} },
+        };
+        case 'get_cached_library': return [];
+        case 'fetch_library': return LIBRARY.map(g => ({ ...g }));
+        // The backend adopts what it finds on disk, so the records the
+        // frontend then reads already include it.
+        case 'reconcile_installs': reconciled = true; return ['PC/Tidebreaker'];
+        case 'get_install_states':
+          return reconciled
+            ? { 'PC/Tidebreaker': { status: 'installed', local_dir: '/games/PC/Tidebreaker' } }
+            : {};
+        default: return null;
+      }
+    };
+
+    const { doc, errors } = await bootApp({ invoke, listen: rt.listen });
+    check('the disk is consulted before the records are read', reconciled, true);
+
+    const installedNav = doc.querySelector('.nav-item[data-type="status"][data-value="installed"]');
+    check('a game found on disk counts as installed',
+          installedNav.querySelector('.count').textContent, '1');
+    check('...and the filter it turned on is showing',
+          installedNav.classList.contains('active'), true);
+    check('...with that game on the shelf',
+          Array.from(doc.querySelectorAll('.card')).map(c => c.dataset.id),
+          ['PC/Tidebreaker']);
+    check('no uncaught errors on the adoption path', errors, []);
+  }
+
   finish();
 })();

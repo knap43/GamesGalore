@@ -1843,11 +1843,33 @@ function setupPlaytimeListener() {
 async function hydrateInstallStatus() {
   let installStates = {};
   try {
+    // Asked first: what this app remembers installing is not the same
+    // as what is in the install directories. Games copied in by hand,
+    // games already on a drive that has just been added, an
+    // installs.json lost with an app-data directory — the disk is the
+    // authority, and this is where it gets read.
+    await reconcileInstalls();
     installStates = await TAURI.core.invoke('get_install_states');
   } catch (err) {
     console.error('failed to fetch install states', err);
   }
   GAMES.forEach(g => applyInstallStatus(g, installStates[g.id]));
+}
+
+/* Brings installs.json in line with the install directories. Failing
+   is not fatal: the records that are there still describe most of the
+   library, and one that is missing means a game shows as uninstalled
+   rather than the app not starting. */
+async function reconcileInstalls() {
+  if (!TAURI) return;
+  try {
+    const changed = await TAURI.core.invoke('reconcile_installs');
+    if (changed && changed.length) {
+      console.log(`install records brought in line with the disk: ${changed.join(', ')}`);
+    }
+  } catch (err) {
+    console.error('failed to reconcile installs with the disk', err);
+  }
 }
 
 /* Applies one InstallStatus (from Rust) onto a game object, in place.
@@ -3996,12 +4018,18 @@ async function refreshRootSpace() {
 /* Empty rows are dropped rather than stored: a blank line in the list
    would be a drive at the filesystem root, which is nobody's
    intention. The first surviving entry is the primary one. */
-function commitInstallRoots(roots) {
+async function commitInstallRoots(roots) {
   state.installRoots = roots.map(r => r.trim()).filter(Boolean);
   state.installRoot = state.installRoots[0] || '';
-  persistSettings();
+  await persistSettings();
   renderInstallRoots();
   refreshRootSpace();
+  // A drive that arrives with games already on it has those games
+  // installed, whatever this app happens to remember. Settled here
+  // rather than at the next launch, since the reason someone adds a
+  // drive is to use what is on it.
+  await hydrateInstallStatus();
+  renderShell();
 }
 
 document.getElementById('install-root-rows').addEventListener('change', (e) => {
