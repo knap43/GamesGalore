@@ -728,6 +728,110 @@ def main() -> int:
     config.LIBRARY_ROOTS = [root]
     srv._reload_catalog()
 
+    print("\n--- switch keys ---")
+    # The failure this exists for: nsz finds keys relative to the HOME
+    # of whoever runs it, and the service runs as its own user, so the
+    # prod.keys that works from a shell is invisible here. The path is
+    # resolved by this process and handed over explicitly.
+    keys_dir = tmp / "keys"
+    keys_dir.mkdir()
+    real_keys = keys_dir / "prod.keys"
+    real_keys.write_text("header_key = 00\n")
+
+    config.KEYS_FILE = str(real_keys)
+    check("a configured keys file is found", srv.keys_file(), real_keys)
+    config.KEYS_FILE = str(keys_dir)
+    check("...as is a directory holding one", srv.keys_file(), real_keys)
+    config.KEYS_FILE = str(tmp / "nowhere" / "prod.keys")
+    check("a configured path that isn't there finds nothing",
+          srv.keys_file(), None)
+
+    status = json.loads(client.get("/status").data)
+    check("status says the keys are missing", status["keys_found"], False)
+    check("...and where it looked", status["keys_searched"],
+          str(tmp / "nowhere" / "prod.keys"))
+    config.KEYS_FILE = str(real_keys)
+    status = json.loads(client.get("/status").data)
+    check("status says when they are there", status["keys_found"], True)
+    check("...and which file it will use", status["keys_path"], str(real_keys))
+
+    # nsz's own message for this says nothing about why the keys are
+    # invisible from here, so it is translated into the fix.
+    config.KEYS_FILE = ""
+    plain = srv._conversion_error("Exception: Could not load keys file.", None)
+    check("a missing-keys failure names the setting that fixes it",
+          "KEYS_FILE" in plain and "NSZ_KEYS" in plain, True)
+    check("...and says whose home it is not",
+          "readable" in plain, True)
+    with_keys = srv._conversion_error("Could not load keys file.", real_keys)
+    check("a keys file that exists but doesn't work names the file",
+          str(real_keys) in with_keys, True)
+    other = srv._conversion_error("Traceback: something else broke", None)
+    check("any other failure is passed through as nsz said it",
+          other, "nsz conversion failed: Traceback: something else broke")
+
+    # The conversion itself, against a stand-in nsz: the real one needs
+    # real keys and a real .nsz, and what is worth testing here is that
+    # the keys reach it.
+    fake_bin = tmp / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "nsz").write_text(
+        "#!/bin/sh\n"
+        'echo "$@" > "$0.args"\n'
+        # Mimic nsz: write the .nsp the server expects to find.
+        'out=""; next=""\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$next" = "1" ]; then out="$arg"; next=""; fi\n'
+        '  if [ "$arg" = "--output" ]; then next=1; fi\n'
+        'done\n'
+        'mkdir -p "$out"\n'
+        'printf NSP > "$out/update.nsp"\n'
+    )
+    (fake_bin / "nsz").chmod(0o755)
+    os.environ["PATH"] = f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
+    config.KEYS_FILE = str(real_keys)
+    shutil.rmtree(srv.CACHE_DIR, ignore_errors=True)
+
+    converted = client.get("/download/Switch/198X/update.nsz")
+    check("a .nsz converts and is served", converted.status_code, 200)
+    passed = (fake_bin / "nsz.args").read_text()
+    check("...with the keys handed to nsz rather than left to be found",
+          f"--keys {real_keys}" in passed, True)
+
+    # An nsz too old to know --keys: it refuses the argument, and the
+    # retry gives it a HOME shaped the way that version reads.
+    (fake_bin / "nsz").write_text(
+        "#!/bin/sh\n"
+        'for arg in "$@"; do\n'
+        '  if [ "$arg" = "--keys" ]; then\n'
+        '    echo "nsz: error: unrecognized arguments: --keys" >&2; exit 2\n'
+        '  fi\n'
+        'done\n'
+        'test -f "$HOME/.switch/prod.keys" || { echo "Could not load keys file." >&2; exit 1; }\n'
+        'out=""; next=""\n'
+        'for arg in "$@"; do\n'
+        '  if [ "$next" = "1" ]; then out="$arg"; next=""; fi\n'
+        '  if [ "$arg" = "--output" ]; then next=1; fi\n'
+        'done\n'
+        'mkdir -p "$out"\n'
+        'printf NSP > "$out/update.nsp"\n'
+    )
+    (fake_bin / "nsz").chmod(0o755)
+    shutil.rmtree(srv.CACHE_DIR, ignore_errors=True)
+    legacy = client.get("/download/Switch/198X/update.nsz")
+    check("an nsz without --keys still gets the keys", legacy.status_code, 200)
+
+    # With no keys to be found at all, the failure says what to do.
+    config.KEYS_FILE = str(tmp / "nowhere" / "prod.keys")
+    shutil.rmtree(srv.CACHE_DIR, ignore_errors=True)
+    refused = client.get("/download/Switch/198X/update.nsz")
+    check("no keys anywhere is a 500 that explains itself",
+          refused.status_code, 500)
+    check("...naming the setting rather than quoting a traceback",
+          "KEYS_FILE" in refused.get_data(as_text=True), True)
+
+    config.KEYS_FILE = ""
+
     print("\n--- refusals ---")
     check("path traversal refused",
           client.get("/download/PC/Hollow Meridian/../../../etc/passwd").status_code

@@ -199,6 +199,145 @@ pub fn install_root_space(app: AppHandle) -> Vec<RootSpace> {
         .collect()
 }
 
+/// What is actually in the install directories, as ids paired with
+/// the directory holding them.
+///
+/// installs.json is this app's memory of what it installed, and memory
+/// is not the same thing as the disk. Games copied in by hand, games
+/// already on a drive that has just been added to the list, an
+/// installs.json lost with an app-data directory — all of them are
+/// games somebody has, and none of them are games this app knew about.
+/// This is the disk's own answer.
+///
+/// Two levels deep exactly, because that is the layout: `<root>/
+/// <platform>/<title>`. Hidden directories are skipped, which is what
+/// keeps `.wine-prefixes` — which lives beside the games by default —
+/// from being read as a platform full of titles.
+fn on_disk(roots: &[PathBuf]) -> Vec<(String, PathBuf)> {
+    let mut found = Vec::new();
+    for root in roots {
+        let Ok(platforms) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for platform in platforms.flatten() {
+            let platform_name = platform.file_name().to_string_lossy().to_string();
+            if platform_name.starts_with('.') || !platform.path().is_dir() {
+                continue;
+            }
+            let Ok(titles) = std::fs::read_dir(platform.path()) else {
+                continue;
+            };
+            for title in titles.flatten() {
+                let title_name = title.file_name().to_string_lossy().to_string();
+                if title_name.starts_with('.') || !title.path().is_dir() {
+                    continue;
+                }
+                // An empty directory is a leftover, not a game: a
+                // failed install can leave one behind, and calling
+                // that installed would put a Play button on nothing.
+                if has_any_file(&title.path(), 0) {
+                    found.push((format!("{platform_name}/{title_name}"), title.path()));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether anything at all is stored under this directory. Depth-capped
+/// for the same reason every walk here is: a link or a pathological
+/// tree should cost a bounded amount of work.
+fn has_any_file(dir: &Path, depth: usize) -> bool {
+    if depth > 4 {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if meta.is_file() && meta.len() > 0 {
+            return true;
+        }
+        if meta.is_dir() && has_any_file(&entry.path(), depth + 1) {
+            return true;
+        }
+    }
+    false
+}
+
+/// What should change so the record matches the disk.
+///
+/// Adopted: on disk, and either unknown to installs.json or recorded
+/// as not installed — a game somebody has, that this app simply hadn't
+/// been told about. A record of a download in progress or a failure is
+/// left alone: those directories are half a game, and the record is
+/// the more truthful of the two.
+///
+/// Dropped: recorded as installed, with nothing on disk under any
+/// directory that currently exists. The qualifier is the point — an
+/// unplugged drive makes its games unreachable, not uninstalled, and
+/// forgetting them because a USB disk is out would be the wrong answer
+/// to a question nobody asked.
+fn reconcile(
+    states: &InstallMap,
+    found: &[(String, PathBuf)],
+    reachable: bool,
+) -> (Vec<(String, PathBuf)>, Vec<String>) {
+    let adopted = found
+        .iter()
+        .filter(|(id, _)| matches!(states.get(id), None | Some(InstallStatus::NotInstalled)))
+        .cloned()
+        .collect();
+
+    let dropped = if reachable {
+        states
+            .iter()
+            .filter(|(id, status)| {
+                matches!(status, InstallStatus::Installed { .. })
+                    && !found.iter().any(|(on_disk, _)| on_disk == *id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    (adopted, dropped)
+}
+
+/// Brings installs.json in line with what the install directories
+/// actually hold, and says what changed.
+///
+/// Called at startup and whenever the list of install directories
+/// changes, which are the two moments the answer can differ from the
+/// last one.
+#[tauri::command]
+pub fn reconcile_installs(app: AppHandle) -> Vec<String> {
+    let roots = crate::settings::get_settings(app.clone()).roots();
+    let reachable = roots.iter().any(|root| root.is_dir());
+    let found = on_disk(&roots);
+    let states = load_states(&app);
+    let (adopted, dropped) = reconcile(&states, &found, reachable);
+
+    let mut changed = Vec::new();
+    for (id, local_dir) in adopted {
+        crate::log_line!("found {id} already in {}", local_dir.display());
+        if set_status(&app, &id, InstallStatus::Installed { local_dir }).is_ok() {
+            changed.push(id);
+        }
+    }
+    for id in dropped {
+        crate::log_line!("{id} is no longer on disk");
+        if set_status(&app, &id, InstallStatus::NotInstalled).is_ok() {
+            changed.push(id);
+        }
+    }
+    changed
+}
+
 /// The ids currently on disk, for the catalog cache to scope itself
 /// to. Reads the same installs.json everything else here does, so the
 /// two files can never disagree about what is installed.
@@ -1143,6 +1282,115 @@ mod tests {
             std::fs::create_dir_all(root).unwrap();
         }
         (base, roots)
+    }
+
+    /// A game directory with something in it, as a copied-in game or a
+    /// finished install both look.
+    fn put_game(root: &Path, id: &str) -> PathBuf {
+        let dir = install_dir_for(root, id).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("game.bin"), b"content").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_game_copied_in_by_hand_is_recognised_as_installed() {
+        let (base, roots) = two_roots("adopt");
+        put_game(&roots[0], "PC/Ferrofluid");
+        put_game(&roots[1], "PS1/Static Choir");
+
+        let found = on_disk(&roots);
+        let (adopted, dropped) = reconcile(&InstallMap::new(), &found, true);
+        let ids: Vec<&str> = adopted.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(ids.contains(&"PC/Ferrofluid"), "{ids:?}");
+        assert!(ids.contains(&"PS1/Static Choir"), "{ids:?}");
+        assert!(dropped.is_empty());
+
+        // Adopted where it actually is, which is what the launcher and
+        // the save sync will go looking for.
+        let (_, dir) = adopted
+            .iter()
+            .find(|(id, _)| id == "PS1/Static Choir")
+            .unwrap();
+        assert!(dir.starts_with(&roots[1]), "{}", dir.display());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_install_in_progress_is_left_to_finish() {
+        let (base, roots) = two_roots("in-flight");
+        put_game(&roots[0], "PC/Ferrofluid");
+        put_game(&roots[0], "PC/Half Downloaded");
+
+        let mut states = InstallMap::new();
+        states.insert(
+            "PC/Half Downloaded".to_string(),
+            InstallStatus::Downloading {
+                file: "data.pak".to_string(),
+                pct: 40,
+                bytes_per_sec: 0,
+                eta_secs: None,
+            },
+        );
+
+        let (adopted, _) = reconcile(&states, &on_disk(&roots), true);
+        let ids: Vec<&str> = adopted.iter().map(|(id, _)| id.as_str()).collect();
+        assert_eq!(ids, vec!["PC/Ferrofluid"]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_empty_directory_is_a_leftover_rather_than_a_game() {
+        let (base, roots) = two_roots("empty");
+        std::fs::create_dir_all(roots[0].join("PC").join("Nothing Here")).unwrap();
+        assert!(on_disk(&roots).is_empty());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn the_prefixes_beside_the_games_are_not_read_as_a_platform() {
+        let (base, roots) = two_roots("prefixes");
+        let prefix = roots[0]
+            .join(".wine-prefixes")
+            .join("Ferrofluid")
+            .join("drive_c");
+        std::fs::create_dir_all(&prefix).unwrap();
+        std::fs::write(prefix.join("thing.dll"), b"x").unwrap();
+
+        assert!(on_disk(&roots).is_empty(), "{:?}", on_disk(&roots));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_game_deleted_by_hand_stops_being_installed() {
+        let (base, roots) = two_roots("gone");
+        let mut states = InstallMap::new();
+        states.insert(
+            "PC/Deleted".to_string(),
+            InstallStatus::Installed {
+                local_dir: roots[0].join("PC").join("Deleted"),
+            },
+        );
+
+        let (_, dropped) = reconcile(&states, &on_disk(&roots), true);
+        assert_eq!(dropped, vec!["PC/Deleted".to_string()]);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn an_unplugged_drive_makes_its_games_unreachable_not_uninstalled() {
+        let mut states = InstallMap::new();
+        states.insert(
+            "PC/On The Other Disk".to_string(),
+            InstallStatus::Installed {
+                local_dir: PathBuf::from("/mnt/removable/PC/On The Other Disk"),
+            },
+        );
+
+        // Nothing readable at all: the disk is out, not empty.
+        let (adopted, dropped) = reconcile(&states, &[], false);
+        assert!(adopted.is_empty());
+        assert!(dropped.is_empty(), "{dropped:?}");
     }
 
     #[test]

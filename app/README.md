@@ -166,6 +166,43 @@ out, so a converting file is budgeted at twice its listed size, plus a
 made — not Unix, unreadable path — it is skipped rather than treated as
 a refusal.
 
+**Records reconciled against the disk**, at startup and whenever the
+list of install directories changes. `installs.json` is this app's
+memory of what it installed, and memory is not the disk: a game copied
+in by hand, a drive added with games already on it, an `installs.json`
+lost with an app-data directory — all of those are games somebody has
+and this app has never heard of, and all of them used to read as not
+installed, which meant missing from the Installed filter and offering
+to download something already there.
+
+`reconcile_installs` walks each root exactly two levels deep — the
+layout is `<root>/<platform>/<title>` — and adopts what it finds.
+Three rules keep it honest:
+
+- **A directory with nothing in it is a leftover, not a game.** A
+  failed install can leave one behind, and putting a Play button on
+  an empty directory helps nobody.
+- **A download in progress or a failure is left alone.** Those
+  directories are half a game, and there the record is the more
+  truthful of the two.
+- **A game recorded as installed with nothing on disk is dropped, but
+  only when some install directory is actually readable.** An unplugged
+  drive makes its games unreachable, not uninstalled.
+
+Hidden directories are skipped, which is what keeps `.wine-prefixes` —
+which sits beside the games by default — from being read as a platform
+full of titles.
+
+**The shelf holds arriving titles too.** The Installed filter is what
+the library is usually being looked at through — it turns itself on
+when anything is installed — so filtering on `installed` alone meant a
+game left the shelf the instant someone pressed Install, taking its
+own progress with it. A title being queued, downloading, or having
+failed now stays put, and its card's sub-line says which of those it
+is instead of naming its genre. The count beside the filter still
+counts only what is installed, because that is what the number means;
+a title on its way is on screen rather than in the tally.
+
 **A choice of drive**, made from the same numbers. Settings holds a
 list of install directories rather than one, and `choose_root` decides
 per install:
@@ -417,11 +454,18 @@ in place reads as successive lines rather than one endless one.
 The window follows the tail only when it is already at the bottom, so reading
 something further up while a game logs away doesn't yank the view.
 
-### The server's drives
+### The server's keys and drives
 
-`GET /status` reports each of the server's library drives, whether it is
-mounted, how much room is left on it and how many games it holds. The **Check**
-button beside "Library server" in Settings shows that under the row. The
+`GET /status` reports whether the server has Switch keys it can read (and which
+file it will use), plus each of its library drives: whether it is mounted, how
+much room is left on it and how many games it holds. The **Check** button beside
+"Library server" in Settings shows all of that under the row.
+
+The keys are worth the space they take here. nsz finds `prod.keys` relative to
+the HOME of whoever runs it, and the server runs as its own account, so keys
+that work when someone decompresses by hand are invisible to the service — a
+failure that otherwise surfaces as a 500 with a Python traceback in it, halfway
+through installing a Switch title. The
 library lives on that machine's disks, so this is a fact only it knows, and
 finding it out by sshing in is what this saves.
 
