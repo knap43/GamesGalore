@@ -338,6 +338,13 @@ The two rankings are duplicated deliberately — one is in Python on the server,
 the other in Rust on the client — so if you change the exclusion list, change
 both. `NON_GAME_EXE_MARKERS` exists under that name in each.
 
+**Open folder** sits beside Play for an installed title and opens its install
+directory in the desktop's file manager — `xdg-open`, falling back to `gio
+open`. It takes a game id rather than a path: what this ends up doing is handing
+a path to another program, and the one worth handing over is the one the app
+recorded installing to, or, for a title adopted off the disk, where it was
+found. A game whose files have since gone says so on the page instead.
+
 **When the automatic choice is wrong, the detail view offers a picker.** Some
 titles have more than one thing worth launching: a separate 32- and 64-bit
 executable, a launcher beside the game proper, or — for PS1/PS2 — a multi-disc

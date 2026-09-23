@@ -290,5 +290,66 @@ const shown = (doc, id) => doc.getElementById(id).style.display !== 'none';
     check('no uncaught errors while the shelf changed under it', errors, []);
   }
 
+  // === opening a game's folder =====================================
+  // The files are the point of the app having installed anything, and
+  // reaching them meant remembering which drive a game went to.
+  {
+    const rt = createRuntime();
+    const opened = [];
+    let refuse = false;
+    const invoke = async (cmd, args) => {
+      switch (cmd) {
+        case 'get_settings': return {
+          server_base: 'http://x:8420', install_root: '/games', sound_enabled: false,
+          install_roots: ['/games'], emulators: {}, launch_overrides: {}, prefix_root: '',
+          save_sync: { enabled: false, device_name: 'test', switch_data_dir: null, title_ids: {} },
+        };
+        case 'get_cached_library': return [];
+        case 'fetch_library': return LIBRARY.map(g => ({ ...g }));
+        case 'get_install_states':
+          return { 'PC/Hollow Meridian': { status: 'installed', local_dir: '/games/PC/Hollow Meridian' } };
+        case 'list_launch_candidates': return [];
+        case 'open_install_dir':
+          if (refuse) throw 'PC/Hollow Meridian is not on this machine any more';
+          opened.push(args.gameId);
+          return null;
+        default: return null;
+      }
+    };
+
+    const { doc, errors } = await bootApp({ invoke, listen: rt.listen });
+    const button = () => doc.getElementById('open-folder-button');
+
+    // The installed title turned the filter on, so the uninstalled one
+    // needs it off again to be reachable.
+    doc.querySelector('.nav-item[data-type="status"][data-value="installed"]').click();
+    await sleep(60);
+    await openGame(doc, 'Tidebreaker');
+    check('a game that is not installed has no folder to open',
+          shown(doc, 'open-folder-button'), false);
+
+    doc.getElementById('detail-back').click();
+    await sleep(80);
+    await openGame(doc, 'Hollow Meridian');
+    check('an installed one does', shown(doc, 'open-folder-button'), true);
+
+    button().click();
+    await sleep(60);
+    check('the button asks the backend by id, not by path',
+          opened, ['PC/Hollow Meridian']);
+
+    // The backend resolves the directory, so it is also the one that
+    // knows when there is no longer a directory to resolve.
+    refuse = true;
+    button().click();
+    await sleep(60);
+    check('a folder that has gone says so on the page',
+          doc.getElementById('install-error').textContent,
+          'PC/Hollow Meridian is not on this machine any more');
+    check('...as a problem rather than as good news',
+          doc.getElementById('install-error').classList.contains('is-good'), false);
+    check('no uncaught errors from the folder button', errors, []);
+  }
+
   finish();
 })();

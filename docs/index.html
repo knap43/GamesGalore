@@ -1494,6 +1494,10 @@
             <div class="launch-menu" id="launch-menu" role="listbox" aria-label="Which file to launch" hidden></div>
           </div>
         </div>
+        <button class="cta-button cta-uninstall" id="open-folder-button" type="button" style="display:none">
+          <svg viewBox="0 0 24 24"><path d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+          Open folder
+        </button>
         <button class="cta-button cta-uninstall" id="uninstall-button" style="display:none"></button>
         <span class="game-size" id="game-size"></span>
       </div>
@@ -2446,6 +2450,26 @@ function setSaveNote(game, message, good = true) {
   el.classList.toggle('is-good', good);
   el.classList.remove('is-info');
   el.style.display = 'block';
+}
+
+/* Opens a game's install directory in the desktop's file manager.
+
+   The backend resolves the directory from what it recorded installing,
+   so this hands it an id rather than a path: a button that opens
+   whatever path the page happens to be holding is a button that opens
+   the wrong thing the moment the page is wrong. */
+async function openGameFolder(game) {
+  if (!game) return;
+  if (!TAURI) {
+    setSaveNote(game, 'Opening a folder needs the desktop app.', false);
+    return;
+  }
+  try {
+    await TAURI.core.invoke('open_install_dir', { gameId: game.id });
+  } catch (err) {
+    console.error('failed to open the install directory', err);
+    setSaveNote(game, String(err), false);
+  }
 }
 
 /* Games already told about their prefix's linked-out folders, so the
@@ -3639,6 +3663,12 @@ function renderCtaRow(game) {
     document.getElementById('launch-picker').style.display = 'none';
   }
 
+  // Offered only for a game whose files are on this machine, and only
+  // when their directory is known — the button's whole job is opening
+  // that directory.
+  document.getElementById('open-folder-button').style.display =
+    game.installed && game.localDir ? 'inline-flex' : 'none';
+
   if (game.installProgress) {
     const queued = game.installProgress.status === 'queued';
     const pct = game.installProgress.pct ?? 0;
@@ -3831,6 +3861,11 @@ document.addEventListener('click', (e) => {
     } else {
       installGame(game);
     }
+    return;
+  }
+
+  if (e.target.closest('#open-folder-button')) {
+    openGameFolder(GAMES.find(g => g.id === currentDetailId));
     return;
   }
 
@@ -4565,7 +4600,9 @@ function moveDirection(dir) {
   if (active.id === 'cta-button') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'right') focusNoScroll(nextCtaTarget('launch-trigger', 'uninstall-button'));
+    else if (dir === 'right') {
+      focusNoScroll(nextCtaTarget('launch-trigger', 'open-folder-button', 'uninstall-button'));
+    }
     return;
   }
 
@@ -4573,6 +4610,14 @@ function moveDirection(dir) {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
     else if (dir === 'left') focusNoScroll(document.getElementById('cta-button'));
+    else if (dir === 'right') focusNoScroll(nextCtaTarget('open-folder-button', 'uninstall-button'));
+    return;
+  }
+
+  if (active.id === 'open-folder-button') {
+    if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
+    else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
+    else if (dir === 'left') focusNoScroll(nextCtaTarget('launch-trigger', 'cta-button'));
     else if (dir === 'right') focusNoScroll(nextCtaTarget('uninstall-button'));
     return;
   }
@@ -4580,7 +4625,9 @@ function moveDirection(dir) {
   if (active.id === 'uninstall-button') {
     if (dir === 'down') focusNoScroll(document.getElementById('viewer'));
     else if (dir === 'up') focusNoScroll(document.getElementById('detail-back'));
-    else if (dir === 'left') focusNoScroll(nextCtaTarget('launch-trigger', 'cta-button'));
+    else if (dir === 'left') {
+      focusNoScroll(nextCtaTarget('open-folder-button', 'launch-trigger', 'cta-button'));
+    }
     return;
   }
 

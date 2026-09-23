@@ -34,6 +34,7 @@ fn main() {
             install_state::reconcile_installs,
             install_state::install_game,
             install_state::uninstall_game,
+            install_state::open_install_dir,
             install_state::cancel_install,
             launcher::launch_game,
             launcher::list_launch_candidates,
