@@ -319,6 +319,9 @@
   .dependency-status.checking { color: var(--text-muted); }
   .dependency-status.found { color: #a8f0c6; background: rgba(52,199,132,0.14); }
   .dependency-status.missing { color: #ffb4b4; background: rgba(255,79,79,0.12); }
+  /* Why a check failed, under the row it failed in. Wraps, since the
+     useful part is often a whole sentence from another program. */
+  .check-detail { color: #ffb4b4; }
 
   .emulator-fields { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
   .emulator-fields-row { display: flex; align-items: center; gap: 8px; }
@@ -2646,6 +2649,7 @@ function renderEmulatorRows() {
             <input class="setting-input emu-version-flag" data-field="version_flag" placeholder="Version flag (e.g. --version)" value="${emu.version_flag}">
             <button class="browse-button emu-check" type="button" data-check="${platform}">Check</button>
           </div>
+          <div class="setting-desc check-detail" data-detail style="margin:0;display:none"></div>
         </div>
       </div>`;
   }).join('');
@@ -2704,10 +2708,23 @@ async function checkEmulator(platform) {
     const result = await TAURI.core.invoke('check_dependency', { command, argsPrefix, versionFlag });
     statusEl.textContent = result.found ? (result.version ? `Found · ${result.version}` : 'Found') : 'Not found';
     statusEl.className = `dependency-status ${result.found ? 'found' : 'missing'}`;
+    // Why it isn't found, when the backend could tell: a path with
+    // nothing at it, a file without its execute bit, an AppImage that
+    // wants a FUSE this system doesn't have. "Not found" on its own
+    // sends people looking for the wrong thing.
+    showCheckDetail(row, result.detail);
   } catch (err) {
     statusEl.textContent = 'Check failed';
     statusEl.className = 'dependency-status missing';
+    showCheckDetail(row, String(err));
   }
+}
+
+function showCheckDetail(row, detail) {
+  const el = row.querySelector('[data-detail]');
+  if (!el) return;
+  el.textContent = detail || '';
+  el.style.display = detail ? 'block' : 'none';
 }
 
 async function checkServerNsz() {

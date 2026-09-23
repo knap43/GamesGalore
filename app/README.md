@@ -920,6 +920,29 @@ flatpak run net.pcsx2.PCSX2 -- -fullscreen -batch -- <path>
 
 where the first `--` is Flatpak's and the second is PCSX2's.
 
+### AppImages, which is how Eden and shadPS4 both come
+
+Point Command at the AppImage's path and leave Args empty. Two things commonly
+stop it working, and **Check** now names both rather than saying "Not found":
+
+- **It isn't executable.** A freshly downloaded AppImage rarely is: `chmod +x
+  Whatever.AppImage`.
+- **It needs FUSE 2.** An AppImage mounts itself with `libfuse.so.2`, which a
+  current Arch does not install — fuse3 is not a substitute. Either
+  `sudo pacman -S fuse2`, or side-step FUSE entirely:
+
+  ```sh
+  ./shadPS4.AppImage --appimage-extract      # once
+  ```
+
+  and point Command at the `squashfs-root/AppRun` that leaves behind. That runs
+  as an ordinary program, needs no FUSE, and starts faster than mounting does.
+  `--appimage-extract-and-run` in Args works too, but it unpacks the whole image
+  on every launch.
+
+For shadPS4 specifically, the AUR also carries `shadps4-bin` and `shadps4-git`,
+either of which gives you a command on PATH and makes all of the above moot.
+
 The Switch default is deliberately left as an obvious placeholder rather than a
 real binary name. Eden ships multiple builds with genuinely different CLI
 conventions (a "standard" AppImage taking a bare positional path with `-f` for
