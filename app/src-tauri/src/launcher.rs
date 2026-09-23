@@ -32,12 +32,12 @@ fn platform_args(platform: &str, path: &str) -> Vec<String> {
             "--".into(),
             path.into(),
         ],
-        "PC" => vec![path.into()],
-        // shadPS4 takes the game as a path to its eboot.bin, either
-        // positionally or behind -g; the explicit flag is used here so
-        // the argument cannot be mistaken for anything else, and
-        // fullscreen is a value rather than a switch.
-        "PS4" => vec!["-f".into(), "true".into(), "-g".into(), path.into()],
+        // Nothing but the path. shadPS4 takes the game positionally,
+        // and everything else about how it runs — fullscreen among
+        // them — is its own configuration rather than ours to assert
+        // over the top of on every launch. Anyone who does want a flag
+        // has Args in Settings, which goes in front of this.
+        "PC" | "PS4" => vec![path.into()],
         // Eden's standard AppImage build takes a bare positional path
         // with -f for fullscreen — no --game flag, no --fullscreen long
         // form. This is specific to that build, confirmed against a
@@ -1170,10 +1170,13 @@ mod tests {
     }
 
     #[test]
-    fn shadps4_is_given_the_game_and_told_to_go_fullscreen() {
+    fn shadps4_is_given_the_game_and_nothing_else() {
+        // How it runs is shadPS4's own configuration; a flag asserted
+        // here would sit on top of whatever was set there, on every
+        // launch.
         assert_eq!(
             platform_args("PS4", "/games/PS4/Cobalt Vein/eboot.bin"),
-            vec!["-f", "true", "-g", "/games/PS4/Cobalt Vein/eboot.bin"]
+            vec!["/games/PS4/Cobalt Vein/eboot.bin"]
         );
     }
 

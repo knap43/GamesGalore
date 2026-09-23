@@ -328,7 +328,10 @@ PS1 and PS2 resolve to a disc, in the order the formats are worth opening:
 format present is offered: a `.cue`/`.bin` pair is one disc, not two, and
 handing an emulator the `.bin` of a pair gives it a track with no table of
 contents. PS4 resolves to `eboot.bin`, shallowest first, since an add-on
-packaged inside a game brings its own.
+packaged inside a game brings its own; shadPS4 is handed that path and nothing
+else, because how it runs is its own configuration and a flag asserted here
+would sit on top of whatever was set there. Args in Settings still goes in
+front, for anyone who wants one.
 
 The decision is made here against the real install directory rather than
 trusting the catalog, since the catalog describes the source library, not what
