@@ -105,14 +105,107 @@ systemctl enable --now games-galore-server
 
 ```
 <each LIBRARY_ROOTS entry>/
-  PS1/  PS2/  PC/  Switch/
+  PS1/  PS2/  PS4/  PC/  Switch/
     <Game Title>/
-      *.bin/*.cue | *.iso | *.nsz | *.nsp            <- game file(s)
-      <a whole installed tree, for PC>               <- see below
-      *.png / *.jpg                                  <- loose screenshots
-      *trailer*.mp4                                  <- optional
-      README.md                                      <- "Title (Year)\n\nDescription..."
+      *.cue/*.bin | *.chd | *.iso | *.mdf | *.nsz | *.nsp  <- game file(s)
+      <a whole installed tree, for PC and PS4>             <- see below
+      *.png / *.jpg                                        <- loose screenshots
+      *trailer*.mp4                                        <- optional
+      README.md                                            <- "Title (Year)\n\nDescription..."
+    <Game Title> (Disc 1).chd                              <- or discs sitting loose
+    <Game Title> (Disc 2).chd                                 in the platform folder
+
+<METADATA_ROOT>/                                           <- outside the library
+  PS1/  PS2/  PS4/  PC/  Switch/
+    <Game Title>/
+      README.md  cover.jpg  screenshot-01.jpg  trailer.mp4  game.json
 ```
+
+### The metadata store
+
+Every game's catalog furniture — `README.md`, `cover.jpg`, screenshots,
+`trailer.mp4`, `game.json` — lives in one place, arranged by platform:
+
+```
+<METADATA_ROOT>/
+  PS1/
+    Velvet Requiem/
+      README.md  cover.jpg  screenshot-01.jpg  trailer.mp4  game.json
+  PS2/  PS4/  PC/  Switch/
+```
+
+`METADATA_ROOT` defaults to `~/.local/share/games-galore-server/metadata` and
+takes an environment override of the same name. It sits **outside every library
+root** on purpose:
+
+- A library is a collection of games. Files this server generated are not part
+  of it, and a backup of the collection shouldn't carry them.
+- With the library spanning several drives, a game that moves between them would
+  otherwise leave its description behind.
+- Loose discs share a platform folder, so there is nowhere beside them to put
+  one game's cover without putting it next to everybody else's.
+- The library stays readable-only, which is the strongest thing that can be said
+  about a tool pointed at somebody's collection.
+
+**A library filled in before the store keeps working.** Metadata still sitting
+in a game's own folder is read from there, and served from there, exactly as
+before. It is never written to again: a fetch for such a game writes to the
+store, and from then on the store is what the catalog reads.
+
+**Moving it across** is one command, and it moves rather than copies, since two
+descriptions is how they start disagreeing:
+
+```sh
+.venv/bin/python metadata.py --migrate
+```
+
+It prints every file it moves. A file the store already has is left where it is
+rather than overwritten — the store is the newer statement by construction — and
+said so at the end. Game files are never touched; a game's own folder keeps
+exactly the game.
+
+`GET /status` reports the store's path, so the client can show where it is.
+
+### Discs: either shape, most formats
+
+A disc platform takes a game either way.
+
+**A folder per game** is the tidier shape, and the one the metadata fetcher
+fills in place. The entry point is whichever disc format is worth opening
+first, searched through the whole folder rather than just its top level — so a
+game whose discs sit in a `discs/` subdirectory is found like any other.
+
+**Files loose in the platform folder** is what most rips actually look like,
+and they are now read as games too. Discs of one game become one game: the disc
+marker is taken off each filename — `(Disc 2)`, `[CD 1]`, `- Disk 3 of 4` — and
+what remains is the title they share. So
+
+```
+PS1/Velvet Requiem (Disc 1).chd
+PS1/Velvet Requiem (Disc 2).chd
+PS1/Velvet Requiem (Disc 3).chd
+```
+
+is one catalog entry with three files, not three entries. A `.cue` and the
+`.bin` it describes group the same way, as does an `.mdf` with its `.mds`.
+
+Their README, cover, screenshots and `game.json` have nowhere to sit beside
+them — the platform folder belongs to every loose title in it — so they live in
+`<platform>/.metadata/<Title>/`, which the fetcher writes and the scanner skips
+when looking for games. Dot directories are never games.
+
+**Formats**, best entry point first:
+
+| Platform | Opened |
+| --- | --- |
+| PS1 | `.m3u`, `.cue`, `.chd`, `.pbp`, `.ecm`, `.iso`, `.img`, `.mdf`, `.bin` |
+| PS2 | `.m3u`, `.iso`, `.chd`, `.cso`, `.zso`, `.gz`, `.cue`, `.mdf`, `.nrg`, `.img`, `.bin` |
+| PS4 | the `eboot.bin` of an extracted game (a `.pkg` is listed, but shadPS4 installs those rather than booting them) |
+| Switch | `.nsp`, or `.nsz` decompressed on the way out |
+| PC | the installed tree, entry point picked by name, depth and size |
+
+An `.m3u` beats the discs it lists, and a `.cue` beats the `.bin` it describes:
+both are one disc named twice otherwise.
 
 A game's id is `<Platform>/<Title>`. The cover is whichever screenshot has
 "cover" in its filename, falling back to the first alphabetically.
@@ -260,6 +353,11 @@ description, `cover.jpg`, `screenshot-01.jpg` onward, `trailer.mp4`, and a
 `game.json` of genre and tags — so a fetched folder and a hand-made one are the
 same thing.
 
+**It writes to the store, never to the library.** Everything above lands in
+`<METADATA_ROOT>/<Platform>/<Title>/`; the games are only ever read. See
+**The metadata store** below, including how to move a library that was filled
+in before the store existed.
+
 **Nothing is overwritten unless you ask.** Every file that already exists is
 skipped and reported as skipped, which makes a second run cheap and makes a
 curated folder safe. `--overwrite` is the escape hatch for a folder whose data is
@@ -282,11 +380,11 @@ POST /metadata                        every game missing a description or cover
 ```
 
 Both take `?overwrite=1`, and both are behind `SAVE_TOKEN` when one is set, since
-they write into the library. The single-game route also takes `?rescan=0`, which
-the app passes while working through a list — one full library rescan per game
-would cost far more than the fetching does, and the next `/library` call picks
-the changes up anyway, because writing into a game's folder moves the mtime the
-catalog's signature watches.
+they are the one writable surface besides the saves. The single-game route also
+takes `?rescan=0`, which the app passes while working through a list — one full
+library rescan per game would cost far more than the fetching does, and the next
+`/library` call picks the changes up anyway, because the store's shape is part
+of the signature the catalog watches.
 
 An `X-RAWG-Key` header overrides `RAWG_API_KEY` for that request, which is how
 the app supplies a key without one being written into this machine's config. It

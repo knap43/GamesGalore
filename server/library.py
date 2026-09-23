@@ -4,13 +4,30 @@ Scans the source game library and classifies each game's files.
 Folder layout:
 
     <library_root>/
-      PS1/  PS2/  PC/  Switch/
+      PS1/  PS2/  PC/  Switch/  PS4/
         <Game Title>/
-          *.bin/*.cue | *.iso | *.nsz | *.nsp            <- game file(s)
-          <a whole installed tree, for PC>               <- see below
-          *.png / *.jpg                                  <- loose screenshots
-          *trailer*.mp4                                  <- optional
-          README.md                                      <- "Title (Year)\n\nDescription..."
+          *.cue/*.bin | *.chd | *.iso | *.mdf | *.nsz | *.nsp   <- game file(s)
+          <a whole installed tree, for PC and PS4>              <- see below
+          *.png / *.jpg                                         <- loose screenshots
+          *trailer*.mp4                                         <- optional
+          README.md                                             <- "Title (Year)\n\nDescription..."
+        <Game Title> (Disc 1).chd                                <- or discs sitting loose
+        <Game Title> (Disc 2).chd                                   in the platform folder
+
+    <METADATA_ROOT>/                                             <- outside the library
+      PS1/ PS2/ PS4/ PC/ Switch/
+        <Game Title>/README.md, cover.jpg, game.json, ...         <- catalog furniture
+
+A disc platform accepts a game either way. A folder is the tidier
+shape; loose files are what most rips actually look like, and they are
+grouped into one game per title by stripping the disc marker off each
+filename, so three discs of one game are one entry with three files.
+
+The catalog furniture is not in the library at all. It lives in the
+metadata store, arranged by platform, so the library holds games and
+nothing else — see `Located` below. Metadata still sitting in a game's
+own folder, from a library filled in before the store existed, is read
+from there and left alone; `metadata.py --migrate` moves it across.
 
 Only the screenshots, trailer and README are required to sit at the top
 level of a game's folder; those three are catalog metadata, and
@@ -22,6 +39,9 @@ directories — rather than a single file, so both the reported size and
 the choice of what to hand Wine have to consider the whole tree. Only
 looking at the top level gets a title's size badly wrong and, when the
 .exe lives in a subdirectory, finds no game file at all.
+
+PS4 is the same shape as PC: an extracted game directory, where the
+thing to launch is the eboot.bin somewhere inside it.
 
 Switch is the one platform where a folder can hold more than one game
 file — a base game plus updates or DLC — and each of those files is
@@ -38,7 +58,50 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Optional
 
-KNOWN_PLATFORMS = {"PS1", "PS2", "PC", "Switch"}
+KNOWN_PLATFORMS = {"PS1", "PS2", "PC", "Switch", "PS4"}
+
+# What a disc looks like, per platform, best entry point first. The
+# order is the ranking: an .m3u names every disc of a set and so beats
+# any single one of them; a .cue describes the .bin beside it and so
+# beats that .bin; and a raw .bin on its own is a last resort, since it
+# is usually the data half of a pair rather than something to open.
+#
+# Anything DuckStation and PCSX2 will actually open is here. A library
+# is whatever somebody's rips happen to be, and a scanner that only
+# knew .cue — which this one did — saw nothing at all in a folder of
+# .chd files.
+DISC_EXTENSIONS = {
+    "PS1": (".m3u", ".cue", ".chd", ".pbp", ".ecm", ".iso", ".img", ".mdf", ".bin"),
+    "PS2": (".m3u", ".iso", ".chd", ".cso", ".zso", ".gz", ".cue", ".mdf",
+            ".nrg", ".img", ".bin"),
+}
+
+# A PS4 title is a directory, not a file: shadPS4 is pointed at the
+# eboot.bin of an extracted game. A .pkg is listed as a fallback so a
+# title that has not been extracted yet still appears rather than
+# vanishing.
+PS4_ENTRY_NAME = "eboot.bin"
+PS4_EXTENSIONS = (".pkg",)
+
+# Files that belong to a disc without being one: the descriptor beside
+# an .mdf, the subchannel data beside a .chd rip. Grouped with their
+# disc rather than mistaken for games of their own.
+DISC_SIDECAR_EXTENSIONS = (".mds", ".sbi", ".cue", ".ccd", ".sub", ".toc")
+
+# "Final Fantasy VII (Disc 2)", "Metal Gear Solid [CD 1]", "Title - Disc 2",
+# "Game (Disk 3 of 4)" — every way a rip names the disc it holds. What
+# is left after removing it is the title the discs share, which is what
+# makes several files one game instead of several.
+DISC_MARKER_RE = re.compile(
+    r"""[\s._-]*                 # the separator in front of the marker
+        [\(\[]?                  # an optional bracket
+        (?:disc|disk|cd|dvd)     # the word itself
+        [\s._-]*\#?\d+           # and its number
+        (?:[\s._-]*of[\s._-]*\d+)?   # "of 4", when a rip says so
+        [\)\]]?                  # the closing bracket
+        \s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
 TRAILER_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 README_NAME = "README.md"
@@ -123,28 +186,200 @@ class Game:
         return asdict(self)
 
 
-def scan_library(root: Path) -> list:
-    if not root.is_dir():
-        raise FileNotFoundError(f"Library root does not exist: {root}")
+@dataclass
+class Located:
+    '''
+    A game and the directories it answers from.
 
-    games = []
+    `content_dir` holds the game's own files, and every filename in
+    `game.files` is relative to it.
+
+    `metadata_dir` is where this game's catalog furniture belongs —
+    `<METADATA_ROOT>/<Platform>/<Title>/` — and is where the fetcher
+    writes, always. It is outside every library root on purpose: a
+    library is somebody's collection of games, and filling it with
+    README files and cover art is writing into their collection.
+
+    `media_dir` is where the furniture actually was found, which is the
+    same directory unless a game still carries its own from before the
+    store existed. That legacy layout is read, never written; the
+    migrator in metadata.py moves it across when asked.
+    '''
+    game: 'Game'
+    content_dir: Path
+    metadata_dir: Path
+    media_dir: Path
+
+
+# Where a loose game's furniture lived for exactly one version of this
+# server, before the store below. Read so that nothing vanishes, and
+# moved out by `metadata.py --migrate`.
+LOOSE_METADATA_DIR = '.metadata'
+
+
+def is_metadata_file(path: Path) -> bool:
+    '''
+    Whether a file is catalog furniture — the README, the sidecar, a
+    screenshot or cover, a trailer. The one definition of what belongs
+    in the store, shared by the scanner and the migrator so they cannot
+    disagree about what to move.
+    '''
+    return (
+        path.name in (README_NAME, SIDECAR_NAME)
+        or path.suffix.lower() in IMAGE_EXTENSIONS
+        or _is_trailer_file(path.name)
+    )
+
+
+def metadata_dir_for(metadata_root: Optional[Path], platform: str, title: str) -> Optional[Path]:
+    '''Where this game's catalog furniture belongs, store and all.'''
+    if metadata_root is None:
+        return None
+    return Path(metadata_root) / platform / title
+
+
+def has_metadata(directory: Optional[Path]) -> bool:
+    '''
+    Whether a directory holds any catalog furniture at all.
+
+    What decides which of two directories a game's cover is read from,
+    so it asks the only question that matters: is there anything here?
+    '''
+    if directory is None or not directory.is_dir():
+        return False
+    return any(
+        path.is_file() and is_metadata_file(path) for path in directory.iterdir()
+    )
+
+
+def scan_library(root: Path, metadata_root: Optional[Path] = None) -> list:
+    '''Every game under `root`. See `scan_library_located` for the
+    directories each one answers from.'''
+    return [located.game for located in scan_library_located(root, metadata_root)]
+
+
+def scan_library_located(root: Path, metadata_root: Optional[Path] = None) -> list:
+    if not root.is_dir():
+        raise FileNotFoundError(f'Library root does not exist: {root}')
+
+    located = []
     for platform_dir in sorted(root.iterdir()):
         if not platform_dir.is_dir() or platform_dir.name not in KNOWN_PLATFORMS:
             continue
+        platform = platform_dir.name
+
         for game_dir in sorted(platform_dir.iterdir()):
-            if not game_dir.is_dir():
+            # A dot directory is furniture rather than a game — the
+            # store's old in-library home, most likely.
+            if not game_dir.is_dir() or game_dir.name.startswith('.'):
                 continue
-            game = _read_game_folder(game_dir, platform_dir.name)
+            metadata = metadata_dir_for(metadata_root, platform, game_dir.name)
+            # The store if it has anything; the game's own folder
+            # otherwise, which is where every library filled in before
+            # the store existed still keeps its covers.
+            media = metadata if has_metadata(metadata) else game_dir
+            game = _read_game_folder(game_dir, platform, media)
             if game is not None:
-                games.append(game)
-    return games
+                located.append(Located(game, game_dir, metadata or game_dir, media))
+
+        located.extend(_loose_games(platform_dir, platform, metadata_root))
+    return located
 
 
-def _read_game_folder(game_dir: Path, platform: str) -> Optional[Game]:
+def _loose_games(platform_dir: Path, platform: str, metadata_root: Optional[Path]) -> list:
+    """
+    Games that are files in the platform folder rather than folders of
+    their own — which is how most people's PS1 and PS2 rips actually
+    sit, and which this scanner used to walk straight past.
+
+    Discs of one game are recognised as one game: the disc marker is
+    taken off each filename and what remains is the title they share,
+    so "Final Fantasy VII (Disc 1).chd" and its two siblings are one
+    entry with three files rather than three entries.
+    """
+    extensions = DISC_EXTENSIONS.get(platform)
+    if not extensions:
+        return []
+
+    grouped: dict = {}
+    for path in sorted(platform_dir.iterdir()):
+        if not path.is_file():
+            continue
+        suffix = path.suffix.lower()
+        if suffix not in extensions and suffix not in DISC_SIDECAR_EXTENSIONS:
+            continue
+        title = DISC_MARKER_RE.sub("", path.stem).strip(" -_.") or path.stem
+        grouped.setdefault(title, []).append(path)
+
+    located = []
+    for title, files in sorted(grouped.items()):
+        # A group of nothing but sidecars is the leftovers of a disc
+        # that isn't there — a .cue whose .bin was deleted, say.
+        if not any(f.suffix.lower() in extensions for f in files):
+            continue
+        metadata = metadata_dir_for(metadata_root, platform, title)
+        legacy = platform_dir / LOOSE_METADATA_DIR / title
+        media = metadata if has_metadata(metadata) else legacy
+        located.append(
+            Located(
+                _read_loose_game(platform_dir, media, platform, title, files),
+                platform_dir,
+                metadata or legacy,
+                media,
+            )
+        )
+    return located
+
+
+def _read_loose_game(
+    platform_dir: Path, media_dir: Path, platform: str, title: str, files: list
+) -> "Game":
+    release_year, description = _read_readme(media_dir / README_NAME)
+    screenshots = _find_screenshots(media_dir) if media_dir.is_dir() else []
+    extra = _read_sidecar(media_dir / SIDECAR_NAME)
+
+    ordered = _rank_disc_files(files, DISC_EXTENSIONS.get(platform, ()))
+    return Game(
+        id=f"{platform}/{title}",
+        title=extra.get("title") or title,
+        platform=platform,
+        release_year=extra.get("release_year", release_year),
+        description=extra.get("description") or description,
+        files=[_game_file(platform_dir, f) for f in ordered],
+        screenshots=screenshots,
+        cover=_pick_cover(screenshots),
+        trailer=_find_trailer(media_dir) if media_dir.is_dir() else None,
+        genre=extra.get("genre"),
+        tags=extra.get("tags") or [],
+        players=extra.get("players"),
+    )
+
+
+def _rank_disc_files(files: list, extensions: tuple) -> list:
+    """
+    Discs first, in the order their formats are worth opening, then
+    everything else that came with them. Ties break on name, so a
+    multi-disc set lists disc 1 before disc 2.
+    """
+    def rank(path: Path):
+        suffix = path.suffix.lower()
+        position = extensions.index(suffix) if suffix in extensions else len(extensions)
+        return (position, path.name.lower())
+
+    return sorted(files, key=rank)
+
+
+def _read_game_folder(
+    game_dir: Path, platform: str, media_dir: Optional[Path] = None
+) -> Optional[Game]:
     title = game_dir.name
-    release_year, description = _read_readme(game_dir / README_NAME)
-    screenshots = _find_screenshots(game_dir)
-    extra = _read_sidecar(game_dir / SIDECAR_NAME)
+    # The furniture is read from wherever it is — the store for a
+    # library filled in since it existed, the game's own folder for one
+    # filled in before — while the files are always read from the game.
+    media_dir = media_dir or game_dir
+    release_year, description = _read_readme(media_dir / README_NAME)
+    screenshots = _find_screenshots(media_dir) if media_dir.is_dir() else []
+    extra = _read_sidecar(media_dir / SIDECAR_NAME)
 
     return Game(
         id=f"{platform}/{title}",
@@ -158,7 +393,7 @@ def _read_game_folder(game_dir: Path, platform: str) -> Optional[Game]:
         files=_find_game_files(game_dir, platform),
         screenshots=screenshots,
         cover=_pick_cover(screenshots),
-        trailer=_find_trailer(game_dir),
+        trailer=_find_trailer(media_dir) if media_dir.is_dir() else None,
         genre=extra.get("genre"),
         tags=extra.get("tags") or [],
         players=extra.get("players"),
@@ -351,6 +586,25 @@ def _pick_pc_executable(game_dir: Path, files: list):
     return min(candidates, key=rank)
 
 
+def _pick_disc(files: list, extensions: tuple) -> Optional[Path]:
+    """
+    The disc to lead with: the best format present, shallowest first so
+    a title with its discs in a subdirectory still leads with a disc
+    rather than with whatever sorts first at the top.
+    """
+    ranked = [f for f in files if f.suffix.lower() in extensions]
+    if not ranked:
+        return None
+    return min(
+        ranked,
+        key=lambda f: (
+            extensions.index(f.suffix.lower()),
+            len(f.parts),
+            f.name.lower(),
+        ),
+    )
+
+
 def _game_file(game_dir: Path, path: Path) -> GameFile:
     """
     One catalog entry for one real file. `filename` is relative to the
@@ -401,8 +655,24 @@ def _find_game_files(game_dir: Path, platform: str) -> list:
         # Searched across the whole tree, not just the top level: a PC
         # game's .exe is as often in a subdirectory as beside its data.
         entry = _pick_pc_executable(game_dir, files)
-    elif platform in {"PS1", "PS2"}:
-        entry = next((f for f in candidates if f.suffix.lower() == ".cue"), None)
+    elif platform == "PS4":
+        # A PS4 title is an extracted game directory, and the thing to
+        # open is its eboot.bin, wherever in the tree it sits.
+        entry = next(
+            (f for f in sorted(files, key=lambda f: len(f.parts))
+             if f.name.lower() == PS4_ENTRY_NAME),
+            None,
+        )
+        if entry is None:
+            entry = next(
+                (f for f in files if f.suffix.lower() in PS4_EXTENSIONS), None
+            )
+    elif platform in DISC_EXTENSIONS:
+        # The whole tree rather than the top level, and every format
+        # the emulator opens rather than .cue alone: a rip is as likely
+        # to be a .chd beside its siblings, or a folder of discs, as
+        # the .cue/.bin pair this used to assume.
+        entry = _pick_disc(files, DISC_EXTENSIONS[platform])
     else:
         entry = None
 

@@ -158,17 +158,22 @@ async function boot(candidatesFor) {
   check('right from Play reaches the picker, which now sits next to it',
         doc.activeElement.id, 'launch-trigger');
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-  check('right again reaches Uninstall', doc.activeElement.id, 'uninstall-button');
+  check('right again reaches Open folder', doc.activeElement.id, 'open-folder-button');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+  check('...and right again Uninstall', doc.activeElement.id, 'uninstall-button');
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
-  check('left from Uninstall goes back to the picker',
-        doc.activeElement.id, 'launch-trigger');
+  check('left from Uninstall goes back to Open folder',
+        doc.activeElement.id, 'open-folder-button');
+  win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+  check('...then the picker', doc.activeElement.id, 'launch-trigger');
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
   check('...and left again to Play', doc.activeElement.id, 'cta-button');
 
-  // The picker sits between them in the document too, not just visually.
+  // The row's order in the document is the order it is walked in.
   const order = [...doc.querySelectorAll('.cta-row > *')].map(el => el.id);
-  check('the row reads Play, picker, Uninstall',
-        order.slice(0, 3), ['cta-button', 'launch-picker', 'uninstall-button']);
+  check('the row reads Play, picker, Open folder, Uninstall',
+        order.slice(0, 4),
+        ['cta-button', 'launch-picker', 'open-folder-button', 'uninstall-button']);
 
   // === uninstall hides the picker ======================================
   doc.getElementById('uninstall-button').click();
@@ -188,10 +193,10 @@ async function boot(candidatesFor) {
         doc.getElementById('launch-picker').style.display, 'none');
   doc.getElementById('cta-button').focus();
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-  check('right from Play skips the hidden picker and lands on Uninstall',
-        doc.activeElement.id, 'uninstall-button');
+  check('right from Play skips the hidden picker and lands on Open folder',
+        doc.activeElement.id, 'open-folder-button');
   win.document.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
-  check('left from Uninstall skips it too, straight back to Play',
+  check('left skips it too, straight back to Play',
         doc.activeElement.id, 'cta-button');
 
   // === backend failure degrades quietly ================================

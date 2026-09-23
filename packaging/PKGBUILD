@@ -48,6 +48,7 @@ optdepends=(
   'umu-launcher: running PC titles through Proton instead of Wine'
   'duckstation: PlayStation titles'
   'pcsx2: PlayStation 2 titles'
+  'shadps4: PlayStation 4 titles'
   'python: running the library server on this machine too'
 )
 source=()

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::fs;
@@ -1184,6 +1185,55 @@ fn verify_transfer(
         )),
         _ => Ok(()),
     }
+}
+
+/// Openers to try, in order, for showing a directory in whatever file
+/// manager this desktop has. `xdg-open` is the portable answer and is
+/// present on essentially every desktop Linux; `gio open` is GLib's
+/// own and is there when GNOME's stack is, which covers the systems
+/// where the first is somehow missing.
+const FILE_MANAGERS: &[(&str, &[&str])] = &[("xdg-open", &[]), ("gio", &["open"])];
+
+/// Opens a game's install directory in the desktop's file manager.
+///
+/// The directory is resolved here rather than taken from the caller:
+/// what this ends up doing is handing a path to another program, and
+/// the one path worth handing over is the one this app recorded
+/// installing to. A game whose files have since been moved or deleted
+/// says so instead.
+#[tauri::command]
+pub fn open_install_dir(app: AppHandle, game_id: String) -> Result<(), String> {
+    let states = load_states(&app);
+    let recorded = match states.get(&game_id) {
+        Some(InstallStatus::Installed { local_dir }) if local_dir.is_dir() => {
+            Some(local_dir.clone())
+        }
+        _ => None,
+    };
+    // Falling back to a search of the install directories covers a
+    // game that was copied in by hand and adopted, and one that moved
+    // drives between sessions.
+    let roots = crate::settings::get_settings(app.clone()).roots();
+    let dir = recorded
+        .or_else(|| existing_install_dir(&roots, &game_id))
+        .ok_or_else(|| format!("{game_id} is not on this machine any more"))?;
+
+    let mut attempts = Vec::new();
+    for (command, args) in FILE_MANAGERS {
+        match Command::new(command).args(*args).arg(&dir).spawn() {
+            Ok(_) => {
+                crate::log_line!("opened {}", dir.display());
+                return Ok(());
+            }
+            Err(e) => attempts.push(format!("{command}: {e}")),
+        }
+    }
+
+    Err(format!(
+        "could not open {}: no file manager answered ({})",
+        dir.display(),
+        attempts.join(", ")
+    ))
 }
 
 #[tauri::command]

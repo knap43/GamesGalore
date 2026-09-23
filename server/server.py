@@ -55,15 +55,23 @@ from config import (
     SAVE_TOKEN,
     SAVE_VERSIONS_KEPT,
 )
-from library import scan_library
+from library import scan_library_located
 from metadata import MetadataError, RawgClient, fill_game_folder
 
 app = Flask(__name__)
 
 _catalog: dict = {}  # game id -> Game
-_game_dirs: dict = {}  # game id -> the directory it was found in
+_game_dirs: dict = {}  # game id -> the directory its files are in
+_media_dirs: dict = {}  # game id -> the directory its cover and README were found in
+_metadata_dirs: dict = {}  # game id -> where its cover and README belong
 _catalog_signature: Optional[tuple] = None  # what the tree looked like when it was scanned
 _catalog_scanned_at: float = 0.0
+
+# Said once per run rather than on every scan.
+_warned_about_store: bool = False
+
+# Where the store lives when a config.py predates it existing.
+DEFAULT_METADATA_ROOT = Path.home() / ".local" / "share" / "games-galore-server" / "metadata"
 
 STATIC_MEDIA_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mkv", ".webm"}
 
@@ -121,15 +129,44 @@ def library_roots() -> list:
     return [Path(root) for root in roots]
 
 
+def metadata_root() -> Path:
+    """
+    Where every game's catalog furniture is kept, arranged by platform.
+
+    Read from the config module on each call for the same reason the
+    library roots are: a config.py written before this existed has no
+    such setting, and the tests point it at a temporary directory.
+
+    A store inside a library root would put generated files back into
+    the collection this exists to keep them out of, so that is said
+    once and loudly rather than silently tolerated.
+    """
+    global _warned_about_store
+    root = Path(getattr(config, "METADATA_ROOT", "") or DEFAULT_METADATA_ROOT)
+    if not _warned_about_store:
+        for library in library_roots():
+            if root == library or library in root.parents:
+                print(
+                    f"METADATA_ROOT ({root}) is inside the library root {library}; "
+                    "the metadata store is meant to sit outside the library"
+                )
+                _warned_about_store = True
+    return root
+
+
 def _reload_catalog() -> None:
-    global _catalog, _game_dirs, _catalog_signature, _catalog_scanned_at
+    global _catalog, _game_dirs, _media_dirs, _metadata_dirs
+    global _catalog_signature, _catalog_scanned_at
 
     catalog: dict = {}
     dirs: dict = {}
+    media: dict = {}
+    metadata: dict = {}
     missing = []
+    store = metadata_root()
     for root in library_roots():
         try:
-            found = scan_library(root)
+            found = scan_library_located(root, store)
         except FileNotFoundError:
             # A drive that isn't mounted right now shouldn't empty the
             # catalog of the ones that are. It is still worth saying
@@ -138,16 +175,23 @@ def _reload_catalog() -> None:
             missing.append(root)
             print(f"library root is not there, skipping it: {root}")
             continue
-        for game in found:
+        for located in found:
+            game = located.game
             if game.id in catalog:
                 # First drive listed wins. A title being copied from
                 # one drive to another exists on both for as long as
                 # the copy takes; serving the established copy until
                 # the old one is deleted is the safe half of that.
                 continue
-            platform, title = game.id.split("/", 1)
             catalog[game.id] = game
-            dirs[game.id] = root / platform / title
+            # Taken from the scan rather than rebuilt from the id: a
+            # game's files and its catalog furniture are the same
+            # directory for a title that lives in one, and two
+            # different ones for a disc sitting loose in a platform
+            # folder.
+            dirs[game.id] = located.content_dir
+            media[game.id] = located.media_dir
+            metadata[game.id] = located.metadata_dir
 
     if missing and len(missing) == len(library_roots()):
         # Every drive gone is a configuration problem rather than a
@@ -157,6 +201,8 @@ def _reload_catalog() -> None:
 
     _catalog = catalog
     _game_dirs = dirs
+    _media_dirs = media
+    _metadata_dirs = metadata
     _catalog_signature = _library_signature()
     _catalog_scanned_at = time.time()
 
@@ -180,6 +226,16 @@ def _library_signature() -> tuple:
     for someone who knows they have just changed something.
     """
     entries = []
+    store = metadata_root()
+    for platform_dir in sorted(store.iterdir()) if store.is_dir() else []:
+        try:
+            entries.append((str(platform_dir), platform_dir.stat().st_mtime))
+            for game_dir in sorted(platform_dir.iterdir()):
+                if game_dir.is_dir():
+                    entries.append((str(game_dir), game_dir.stat().st_mtime))
+        except OSError:
+            continue
+
     for root in library_roots():
         try:
             platforms = sorted(root.iterdir())
@@ -256,8 +312,7 @@ def _media_url(game, filename: str) -> str:
 # filename, which no lookup would then resolve.
 @app.route("/media/<platform>/<title>/<path:filename>")
 def media_route(platform: str, title: str, filename: str):
-    game_dir = _resolve_game_dir(f"{platform}/{title}")
-    path = _safe_join(game_dir, filename)
+    path = _safe_join(_resolve_media_dir(f"{platform}/{title}"), filename)
     if path.suffix.lower() not in STATIC_MEDIA_EXTENSIONS:
         abort(403)
     return send_file(path, conditional=True)
@@ -640,8 +695,14 @@ def _fetch_metadata_for(game_id: str, *, overwrite: bool):
     # stays out of access logs and browser history.
     key = request.headers.get("X-RAWG-Key", "").strip() or RAWG_API_KEY
     client = RawgClient(key, requests.Session())
+    # Written to the store, always: the library holds games, and this
+    # is not one. A game whose metadata is still in its own folder from
+    # before the store existed is read from there and written here, so
+    # a fetch is also how a title moves across.
+    directory = _resolve_metadata_dir(game_id)
+    directory.mkdir(parents=True, exist_ok=True)
     return fill_game_folder(
-        _resolve_game_dir(game_id),
+        directory,
         game.title,
         client,
         overwrite=overwrite,
@@ -666,6 +727,7 @@ def status_route():
         "keys_found": keys is not None,
         "keys_path": str(keys) if keys else None,
         "keys_searched": _searched_for_keys(),
+        "metadata_root": str(metadata_root()),
         "library_roots": _library_root_status(),
     })
 
@@ -862,6 +924,31 @@ def _resolve_game_dir(game_id: str) -> Path:
     # the scan, and re-deriving it would have to guess the same order
     # again.
     directory = _game_dirs.get(game_id)
+    if directory is None:
+        abort(404, "unknown game id")
+    return directory
+
+def _resolve_media_dir(game_id: str) -> Path:
+    """
+    Where a game's cover, screenshots, README and game.json live.
+
+    The game's own directory for a title that has one; a folder
+    under `.metadata/` for a disc sitting loose in a platform
+    folder, since that folder belongs to every loose title in it and
+    writing one game's cover into it would be writing into all of
+    them.
+    """
+    directory = _media_dirs.get(game_id)
+    if directory is None:
+        abort(404, "unknown game id")
+    return directory
+
+
+def _resolve_metadata_dir(game_id: str) -> Path:
+    # Where the furniture belongs, as against where it currently is:
+    # the store, always, which is what makes a fetch standardise a game
+    # that still carries its own.
+    directory = _metadata_dirs.get(game_id)
     if directory is None:
         abort(404, "unknown game id")
     return directory

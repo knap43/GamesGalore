@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -202,9 +203,16 @@ def fill_game_folder(
     max_screenshots: int = 6,
 ) -> FetchResult:
     """
-    Fetches whatever `game_dir` is missing. Never touches the game
-    files themselves — only the catalog furniture beside them.
+    Fetches whatever `game_dir` is missing into it.
+
+    `game_dir` is a directory in the metadata store —
+    `<METADATA_ROOT>/<Platform>/<Title>/` — rather than the game's own
+    folder. The library holds games; everything written here was
+    generated from RAWG, and generated files do not belong in somebody
+    else's collection. Callers pass the store's path; this only writes
+    where it is pointed, and creates it if it is not there yet.
     """
+    game_dir.mkdir(parents=True, exist_ok=True)
     result = FetchResult(title=title)
 
     game = client.search(title)
@@ -271,6 +279,74 @@ def fill_game_folder(
     return result
 
 
+def _migrate(roots: list, store: Path) -> int:
+    '''
+    Moves metadata still sitting in the library into the store.
+
+    Everything this server generates has one home now, and a library
+    filled in before that was true keeps its README and cover art in
+    each game's own folder — which still works, since the scanner reads
+    both, but leaves the collection carrying files nobody put there.
+    This is how someone says "tidy that up".
+
+    Moved, not copied: two copies of a description is how they start
+    disagreeing. A file already in the store wins and the one in the
+    library is left alone rather than overwritten, since the store is
+    the newer statement by construction.
+    '''
+    from library import LOOSE_METADATA_DIR, is_metadata_file, scan_library_located
+
+    moved = 0
+    skipped = 0
+    for root in roots:
+        try:
+            located = scan_library_located(root, store)
+        except FileNotFoundError:
+            print(f'library root is not there, skipping it: {root}')
+            continue
+
+        for entry in located:
+            target = entry.metadata_dir
+            platform, title = entry.game.id.split('/', 1)
+            # Where this game's furniture would have been left: its own
+            # folder, or — for a disc with no folder — the in-library
+            # home the store replaced. Never the platform folder
+            # itself, which belongs to every loose title in it and
+            # whose stray images are nobody's to move.
+            source = (
+                entry.content_dir
+                if entry.content_dir.name == title
+                else entry.content_dir / LOOSE_METADATA_DIR / title
+            )
+            if source == target or not source.is_dir():
+                continue
+
+            for path in sorted(source.iterdir()):
+                if not path.is_file() or not is_metadata_file(path):
+                    continue
+                destination = target / path.name
+                if destination.exists():
+                    print(f'kept the store\'s own {entry.game.id}/{path.name}')
+                    skipped += 1
+                    continue
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(path), str(destination))
+                print(f'{entry.game.id}: {path.name} -> {destination}')
+                moved += 1
+
+            # The old in-library home for a loose disc's furniture,
+            # emptied by the loop above, is worth taking with it.
+            if source.parent.name == LOOSE_METADATA_DIR and not any(source.iterdir()):
+                source.rmdir()
+                if not any(source.parent.iterdir()):
+                    source.parent.rmdir()
+
+    print(f'moved {moved} file(s) into {store}' if moved else f'nothing to move into {store}')
+    if skipped:
+        print(f'{skipped} left in the library because the store already had one')
+    return 0
+
+
 def _cli() -> int:
     """
     Fills in the whole library from the command line, without the app
@@ -288,16 +364,24 @@ def _cli() -> int:
     import requests
 
     from config import METADATA_MAX_SCREENSHOTS, RAWG_API_KEY
-    from library import scan_library
-    from server import library_roots
+    from library import scan_library_located
+    from server import library_roots, metadata_root
 
-    parser = argparse.ArgumentParser(description="Fill in game folders from RAWG.")
+    parser = argparse.ArgumentParser(
+        description="Fill in the metadata store from RAWG.")
     parser.add_argument("titles", nargs="*", help="only these games (default: all incomplete)")
     parser.add_argument("--overwrite", action="store_true",
                         help="replace files that are already there")
     parser.add_argument("--pause", type=float, default=0.3,
                         help="seconds between games, to stay well inside RAWG's rate limit")
+    parser.add_argument("--migrate", action="store_true",
+                        help="move metadata still sitting in the library into the store, "
+                             "and fetch nothing")
     args = parser.parse_args()
+
+    store = metadata_root()
+    if args.migrate:
+        return _migrate(library_roots(), store)
 
     try:
         client = RawgClient(RAWG_API_KEY, requests.Session())
@@ -306,17 +390,18 @@ def _cli() -> int:
         return 2
 
     wanted = {t.lower() for t in args.titles}
-    # Every drive the library spans, and the directory each game came
-    # from, so a game on the second drive is filled in where it is.
+    # Every drive the library spans, with each game paired to its place
+    # in the store — which is one directory per game whichever drive
+    # the game itself is on.
     found = []
     for root in library_roots():
         try:
-            games_on_root = scan_library(root)
+            located = scan_library_located(root, store)
         except FileNotFoundError:
             print(f"library root is not there, skipping it: {root}")
             continue
-        for game in games_on_root:
-            found.append((game, root / game.platform / game.title))
+        for entry in located:
+            found.append((entry.game, entry.metadata_dir))
 
     seen = set()
     games = []

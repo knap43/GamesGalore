@@ -13,6 +13,7 @@ Run from this directory, with flask installed:
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -69,6 +70,33 @@ def build_library(root: Path) -> None:
     write("PS1/Static Choir/Static Choir.cue", 300)
     write("PS1/Static Choir/Static Choir.bin", 600_000)
 
+    # A folder of discs rather than a .cue/.bin pair, which is what a
+    # CHD rip of a multi-disc game looks like.
+    write("PS1/Chrono Harbour/Chrono Harbour (Disc 1).chd", 400_000)
+    write("PS1/Chrono Harbour/Chrono Harbour (Disc 2).chd", 380_000)
+
+    # Discs loose in the platform folder — no folder of their own, one
+    # game across three files.
+    write("PS1/Velvet Requiem (Disc 1).chd", 200_000)
+    write("PS1/Velvet Requiem (Disc 2).chd", 210_000)
+    write("PS1/Velvet Requiem (Disc 3).chd", 190_000)
+    # A single loose disc, and a .cue/.bin pair sitting loose beside it.
+    write("PS1/Neon Vigil.iso", 700_000)
+    write("PS1/Paper Lantern.cue", 300)
+    write("PS1/Paper Lantern.bin", 500_000)
+
+    # PS2: an .mdf with its .mds descriptor, and an .iso in a
+    # subdirectory of its game folder.
+    write("PS2/Ashen Circuit/Ashen Circuit.mdf", 900_000)
+    write("PS2/Ashen Circuit/Ashen Circuit.mds", 400)
+    write("PS2/Gravel Saint/discs/Gravel Saint.iso", 1_200_000)
+    write("PS2/Lowlight Drive.iso", 1_100_000)
+
+    # PS4: an extracted game, where the thing to launch is eboot.bin.
+    write("PS4/Cobalt Vein/eboot.bin", 30_000)
+    write("PS4/Cobalt Vein/sce_sys/param.sfo", 2_000)
+    write("PS4/Cobalt Vein/data/assets.pak", 4_000_000)
+
     write("Switch/198X/base.nsp", 1_000)
     write("Switch/198X/update.nsz", 2_000)
 
@@ -79,7 +107,7 @@ def encode_segments(value: str) -> str:
 
 
 def main() -> int:
-    from library import scan_library
+    from library import KNOWN_PLATFORMS, scan_library
 
     tmp = Path(tempfile.mkdtemp())
     root = tmp / "library"
@@ -120,12 +148,55 @@ def main() -> int:
           sorted((f.filename, f.size_bytes, f.needs_conversion) for f in switch.files),
           [("base.nsp", 1000, False), ("update.nsz", 2000, True)])
 
+    print("\n--- disc platforms ---")
+    # The shapes a real library is in: a .cue/.bin pair, a folder of
+    # CHDs, discs loose in the platform folder, an .mdf with its .mds,
+    # an .iso down a subdirectory. Every one of these used to be
+    # invisible unless it had a .cue at its top level.
+    harbour = games["PS1/Chrono Harbour"]
+    check("a folder of CHDs is a game", [f.filename for f in harbour.files],
+          ["Chrono Harbour (Disc 1).chd", "Chrono Harbour (Disc 2).chd"])
+
+    velvet = games["PS1/Velvet Requiem"]
+    check("discs loose in the platform folder are one game, not three",
+          [f.filename for f in velvet.files],
+          ["Velvet Requiem (Disc 1).chd", "Velvet Requiem (Disc 2).chd",
+           "Velvet Requiem (Disc 3).chd"])
+    check("...titled by what the discs have in common", velvet.title, "Velvet Requiem")
+    check("...and sized as the sum of them",
+          sum(f.size_bytes for f in velvet.files), 600_000)
+
+    check("a single loose .iso is a game", "PS1/Neon Vigil" in games, True)
+    lantern = games["PS1/Paper Lantern"]
+    check("a loose .cue/.bin pair is one game led by the .cue",
+          [f.filename for f in lantern.files],
+          ["Paper Lantern.cue", "Paper Lantern.bin"])
+
+    ashen = games["PS2/Ashen Circuit"]
+    check("an .mdf leads its .mds rather than the other way round",
+          [f.filename for f in ashen.files],
+          ["Ashen Circuit.mdf", "Ashen Circuit.mds"])
+    gravel = games["PS2/Gravel Saint"]
+    check("a disc down a subdirectory is still the entry point",
+          gravel.files[0].filename, "discs/Gravel Saint.iso")
+    check("a loose PS2 .iso is a game", "PS2/Lowlight Drive" in games, True)
+
+    cobalt = games["PS4/Cobalt Vein"]
+    check("a PS4 game leads with its eboot.bin",
+          cobalt.files[0].filename, "eboot.bin")
+    check("...and carries the rest of the extracted tree",
+          sorted(f.filename for f in cobalt.files),
+          ["data/assets.pak", "eboot.bin", "sce_sys/param.sfo"])
+
     print("\n--- routes and install ---")
     import config
 
     config.LIBRARY_ROOTS = [root]
     config.LIBRARY_ROOT = root
     config.CACHE_DIR = tmp / "cache"
+    # The metadata store, which is outside the library on purpose —
+    # here that means outside `root`, beside it in the same temp tree.
+    config.METADATA_ROOT = tmp / "metadata"
     import server as srv
 
     srv.CACHE_DIR = config.CACHE_DIR
@@ -435,13 +506,13 @@ def main() -> int:
     # /library used to rescan the whole tree on every call. It now
     # rescans when the tree looks different, and not otherwise.
     scans = {"count": 0}
-    real_scan = srv.scan_library
+    real_scan = srv.scan_library_located
 
-    def counting_scan(path):
+    def counting_scan(path, store=None):
         scans["count"] += 1
-        return real_scan(path)
+        return real_scan(path, store)
 
-    srv.scan_library = counting_scan
+    srv.scan_library_located = counting_scan
     srv._reload_catalog()          # prime it, and count that one
     before = scans["count"]
 
@@ -473,7 +544,7 @@ def main() -> int:
 
     shutil.rmtree(new_game)
     srv._reload_catalog()
-    srv.scan_library = real_scan
+    srv.scan_library_located = real_scan
 
     print("\n--- metadata sidecar ---")
     # Everything else about a game is inferred from its folder; this is
@@ -705,12 +776,12 @@ def main() -> int:
 
     r = client.post("/metadata/PS1/Distant%20Signal")
     check("a game on the second drive can be filled in", r.status_code, 200)
-    check("...and its files land on that drive",
-          sorted(f.name for f in far.iterdir() if f.name != "Distant Signal.cue"),
+    check("...into the store, which is one place whichever drive a game is on",
+          sorted(f.name for f in (config.METADATA_ROOT / "PS1" / "Distant Signal").iterdir()),
           ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
            "screenshot-02.jpg", "trailer.mp4"])
-    check("...rather than on the first one",
-          (root / "PS1" / "Distant Signal").exists(), False)
+    check("...leaving the drive holding nothing but the game",
+          sorted(f.name for f in far.iterdir()), ["Distant Signal.cue"])
     check("...and the catalog picks the description up from there",
           bool(srv._catalog["PS1/Distant Signal"].description), True)
 
@@ -722,10 +793,111 @@ def main() -> int:
     filled = {entry["title"] for entry in client.post("/metadata").get_json()["results"]}
     check("a library-wide fetch reaches the second drive",
           "Second Signal" in filled, True)
-    check("...writing there too", (far_two / "cover.jpg").exists(), True)
+    check("...writing to the store for it as well",
+          (config.METADATA_ROOT / "PS1" / "Second Signal" / "cover.jpg").exists(), True)
 
     shutil.rmtree(second, ignore_errors=True)
     config.LIBRARY_ROOTS = [root]
+    srv._reload_catalog()
+
+    print("\n--- a loose disc through the routes ---")
+    # A loose disc's files come from the platform folder while its
+    # cover and README have nowhere to sit beside them, so they go
+    # under .metadata/. Both halves have to resolve.
+    srv._reload_catalog()
+    disc = client.get("/download/PS1/Velvet%20Requiem/Velvet%20Requiem%20(Disc%202).chd")
+    check("a loose disc downloads", disc.status_code, 200)
+    check("...the right one of the set", len(disc.data), 210_000)
+    check("a file from another loose game is refused",
+          client.get("/download/PS1/Velvet%20Requiem/Neon%20Vigil.iso").status_code, 404)
+
+    # The archive is built from the catalog's file list, not from the
+    # directory — which for a loose disc is a platform folder full of
+    # other people's games.
+    import tarfile as tar_module
+    archived = client.get("/archive/PS1/Velvet%20Requiem")
+    check("a loose game archives", archived.status_code, 200)
+    with tar_module.open(fileobj=io.BytesIO(archived.data), mode="r|") as bundle:
+        names = sorted(member.name for member in bundle)
+    check("...carrying its own discs and nothing else", names,
+          ["Velvet Requiem (Disc 1).chd", "Velvet Requiem (Disc 2).chd",
+           "Velvet Requiem (Disc 3).chd"])
+
+    filled = client.post("/metadata/PS1/Velvet%20Requiem")
+    check("a loose disc can be filled in", filled.status_code, 200)
+    meta_dir = config.METADATA_ROOT / "PS1" / "Velvet Requiem"
+    check("...into the store rather than into the library",
+          sorted(f.name for f in meta_dir.iterdir()),
+          ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
+           "screenshot-02.jpg", "trailer.mp4"])
+    check("...leaving the library untouched",
+          (root / "PS1" / "README.md").exists(), False)
+    check("...and the store arranged by platform",
+          meta_dir.parent.name, "PS1")
+
+    srv._reload_catalog()
+    check("the catalog picks that metadata up",
+          srv._catalog["PS1/Velvet Requiem"].cover, "cover.jpg")
+    check("...and serves it as media",
+          client.get("/media/PS1/Velvet%20Requiem/cover.jpg").status_code, 200)
+    check("nothing in the store is mistaken for a game",
+          any(gid.endswith("/.metadata") for gid in srv._catalog), False)
+
+    print("\n--- the metadata store ---")
+    # One place for every game's furniture, arranged by platform and
+    # outside the library — so the library holds games and nothing else.
+    store = config.METADATA_ROOT
+    check("a fetch writes to the store", (store / "PS1" / "Static Choir").is_dir(), True)
+    check("...arranged by platform, one directory per game",
+          all(child.is_dir() and child.name in KNOWN_PLATFORMS for child in store.iterdir()),
+          True)
+    check("...and leaves the games' own folders alone",
+          sorted(p.name for p in (root / "PS1" / "Static Choir").iterdir()),
+          ["Static Choir.bin", "Static Choir.cue"])
+
+    status = json.loads(client.get("/status").data)
+    check("status says where the store is", status["metadata_root"], str(store))
+
+    # A library filled in before the store existed keeps its covers:
+    # they are read where they are, and only moved when asked.
+    legacy = root / "PS2" / "Old Habits"
+    legacy.mkdir()
+    (legacy / "Old Habits.iso").write_bytes(b"ISO" * 100)
+    (legacy / "README.md").write_text("Old Habits (1999)\n\nFilled in years ago.")
+    (legacy / "cover.png").write_bytes(b"PNG")
+    srv._reload_catalog()
+    old_game = srv._catalog["PS2/Old Habits"]
+    check("metadata still in a game's folder is read from there",
+          (old_game.release_year, old_game.cover), (1999, "cover.png"))
+    check("...and served from there",
+          client.get("/media/PS2/Old%20Habits/cover.png").status_code, 200)
+    check("...without the README counting as a game file",
+          [f.filename for f in old_game.files], ["Old Habits.iso"])
+
+    moved = md._migrate([root], store)
+    check("migrating reports success", moved, 0)
+    check("...moving the furniture into the store",
+          sorted(p.name for p in (store / "PS2" / "Old Habits").iterdir()),
+          ["README.md", "cover.png"])
+    check("...and leaving the game behind",
+          sorted(p.name for p in legacy.iterdir()), ["Old Habits.iso"])
+
+    srv._reload_catalog()
+    migrated = srv._catalog["PS2/Old Habits"]
+    check("the catalog reads the moved metadata",
+          (migrated.release_year, migrated.cover), (1999, "cover.png"))
+    check("...and serves it from the store",
+          client.get("/media/PS2/Old%20Habits/cover.png").status_code, 200)
+
+    # Migrating again has nothing to do, and never overwrites what the
+    # store already has.
+    (legacy / "README.md").write_text("Old Habits (1999)\n\nA second copy.")
+    md._migrate([root], store)
+    check("a file the store already has is left in the library rather than lost",
+          (legacy / "README.md").exists(), True)
+    check("...and the store's own copy is untouched",
+          "years ago" in (store / "PS2" / "Old Habits" / "README.md").read_text(), True)
+    (legacy / "README.md").unlink()
     srv._reload_catalog()
 
     print("\n--- switch keys ---")
@@ -842,8 +1014,14 @@ def main() -> int:
           client.get("/download/PC/Nothing Here/x.exe").status_code, 404)
     check("media serves the cover",
           client.get("/media/PC/Hollow Meridian/cover.png").status_code, 200)
-    check("media refuses a non-media file",
-          client.get("/media/PC/Hollow Meridian/bin/HollowMeridian.exe").status_code, 403)
+    # Either refusal is right, and which one depends on where the
+    # game's furniture is: 403 from the extension check when /media is
+    # pointed at a game's own folder, as it still is for a library
+    # filled in before the store existed, and 404 once the store holds
+    # the metadata, since no game file is reachable from there at all.
+    check("media refuses a game file",
+          client.get("/media/PC/Hollow Meridian/bin/HollowMeridian.exe").status_code
+          in (403, 404), True)
 
     with srv.app.test_request_context():
         catalog = json.loads(client.get("/library").data)

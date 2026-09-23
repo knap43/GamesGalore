@@ -6,6 +6,13 @@ Disclaimer: the code in its entirety was written by an LLM — use it at your ow
 This is still kind of a WIP, as I wasn't able to resolve some bugs. Known gaps
 are listed at the bottom of each subproject's README.
 
+### Demo:
+https://knap43.github.io/GamesGalore/
+
+### Screenshots:
+<img width="2664" height="1704" alt="image" src="https://github.com/user-attachments/assets/eafddd76-e406-4fbd-851b-1d035a8687a9" />
+<img width="2664" height="1704" alt="image" src="https://github.com/user-attachments/assets/6a5f94cf-0688-4e6c-a7cc-69b64b8bc360" />
+
 ### Layout
 
 | Path | What it is |
@@ -99,7 +106,8 @@ Settings also has a **View logs** button, which shows what this session has
 printed — the command each game was launched with, where each install went,
 anything that went wrong, and the running game's own output — whether or not the
 app was started from a terminal.
-Nothing works until those two are set. Emulator commands for each platform have
+Nothing works until those two are set. The platforms are PS1 (DuckStation), PS2
+(PCSX2), PS4 (shadPS4), PC (Wine or Proton) and Switch (Eden). Emulator commands for each platform have
 sensible defaults and are worth checking if you use Flatpaks. PC titles run
 through Wine by default and can be switched to Proton in the same row, which
 needs `umu-launcher` from `extra` and no Steam at all.
@@ -129,13 +137,6 @@ is there for data that is wrong rather than missing.
 
 `app/README.md` and `server/README.md` go into all of this properly, including
 NVIDIA notes, the emulator configuration and the known gaps.
-
-### Demo:
-https://knap43.github.io/GamesGalore/
-
-### Screenshots:
-<img width="2664" height="1704" alt="image" src="https://github.com/user-attachments/assets/eafddd76-e406-4fbd-851b-1d035a8687a9" />
-<img width="2664" height="1704" alt="image" src="https://github.com/user-attachments/assets/6a5f94cf-0688-4e6c-a7cc-69b64b8bc360" />
 
 ### License
 

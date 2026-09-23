@@ -33,6 +33,11 @@ fn platform_args(platform: &str, path: &str) -> Vec<String> {
             path.into(),
         ],
         "PC" => vec![path.into()],
+        // shadPS4 takes the game as a path to its eboot.bin, either
+        // positionally or behind -g; the explicit flag is used here so
+        // the argument cannot be mistaken for anything else, and
+        // fullscreen is a value rather than a switch.
+        "PS4" => vec!["-f".into(), "true".into(), "-g".into(), path.into()],
         // Eden's standard AppImage build takes a bare positional path
         // with -f for fullscreen — no --game flag, no --fullscreen long
         // form. This is specific to that build, confirmed against a
@@ -183,11 +188,68 @@ fn ranked_executables(install_dir: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
     exes
 }
 
+/// Disc formats worth opening, best first, per platform. Mirrors
+/// DISC_EXTENSIONS in the server's library.py, and for the same
+/// reason: a library is whatever somebody's rips happen to be, and
+/// .cue alone — which is all this used to look for — finds nothing at
+/// all in a folder of .chd files.
+///
+/// An .m3u names every disc of a set, so it beats any single disc; a
+/// .cue describes the .bin beside it, so it beats that .bin; and a
+/// raw .bin comes last, being usually the data half of a pair rather
+/// than a thing to open.
+const DISC_EXTENSIONS: &[(&str, &[&str])] = &[
+    (
+        "PS1",
+        &[
+            "m3u", "cue", "chd", "pbp", "ecm", "iso", "img", "mdf", "bin",
+        ],
+    ),
+    (
+        "PS2",
+        &[
+            "m3u", "iso", "chd", "cso", "zso", "gz", "cue", "mdf", "nrg", "img", "bin",
+        ],
+    ),
+];
+
+fn disc_extensions(platform: &str) -> Option<&'static [&'static str]> {
+    DISC_EXTENSIONS
+        .iter()
+        .find(|(name, _)| *name == platform)
+        .map(|(_, extensions)| *extensions)
+}
+
+/// Every disc in the install directory, best format first and then by
+/// name, so a multi-disc set reads "Disc 1, Disc 2" rather than in
+/// whatever order the filesystem hands them over.
+///
+/// Only the best format present is offered. A .cue/.bin pair is one
+/// disc listed twice otherwise, and picking the .bin of a pair gets
+/// an emulator a track with no table of contents.
+fn ranked_discs(entries: &[PathBuf], extensions: &[&str]) -> Vec<PathBuf> {
+    let Some(best) = extensions
+        .iter()
+        .find(|ext| entries.iter().any(|p| has_extension(p, ext)))
+    else {
+        return Vec::new();
+    };
+
+    let mut discs: Vec<PathBuf> = entries
+        .iter()
+        .filter(|p| has_extension(p, best))
+        .cloned()
+        .collect();
+    discs.sort_by_key(|p| p.to_string_lossy().to_lowercase());
+    discs
+}
+
 /// Everything in the install directory worth offering as a thing to
 /// launch, best first. PC titles list their executables; PS1/PS2 list
-/// their .cue sheets, of which a multi-disc title has one per disc.
-/// Switch titles list nothing — a base game and its updates aren't
-/// alternatives to each other, so there's no choice to present.
+/// their discs, of which a multi-disc title has one per disc; a PS4
+/// title lists its eboot.bin. Switch titles list nothing — a base game
+/// and its updates aren't alternatives to each other, so there's no
+/// choice to present.
 fn launch_candidates(install_dir: &Path, platform: &str) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     collect_files(install_dir, &mut entries);
@@ -198,11 +260,25 @@ fn launch_candidates(install_dir: &Path, platform: &str) -> Vec<PathBuf> {
 
     match platform {
         "PC" => ranked_executables(install_dir, &entries),
-        "PS1" | "PS2" => entries
-            .into_iter()
-            .filter(|p| has_extension(p, "cue"))
-            .collect(),
-        _ => Vec::new(),
+        "PS4" => {
+            let mut boots: Vec<PathBuf> = entries
+                .iter()
+                .filter(|p| {
+                    p.file_name()
+                        .is_some_and(|n| n.eq_ignore_ascii_case("eboot.bin"))
+                })
+                .cloned()
+                .collect();
+            // Shallowest first: a title's own eboot.bin sits at the top
+            // of its tree, and anything deeper belongs to an update or
+            // an add-on packaged inside it.
+            boots.sort_by_key(|p| (p.components().count(), p.to_string_lossy().to_lowercase()));
+            boots
+        }
+        _ => match disc_extensions(platform) {
+            Some(extensions) => ranked_discs(&entries, extensions),
+            None => Vec::new(),
+        },
     }
 }
 
@@ -997,6 +1073,108 @@ mod tests {
         let dir = fixture("Ferrofluid", &[("Ferrofluid.exe", 10), ("assets.dat", 20)]);
         assert_eq!(launch_candidates(&dir, "PC").len(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_of_chds_lists_each_disc() {
+        let dir = fixture(
+            "Chrono Harbour",
+            &[
+                ("Chrono Harbour (Disc 1).chd", 400_000),
+                ("Chrono Harbour (Disc 2).chd", 380_000),
+            ],
+        );
+        assert_eq!(
+            relative_names(&dir, launch_candidates(&dir, "PS1")),
+            vec!["Chrono Harbour (Disc 1).chd", "Chrono Harbour (Disc 2).chd"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_cue_beats_the_bin_it_describes() {
+        // Both are discs by extension; only one is a thing to open.
+        let dir = fixture(
+            "Paper Lantern",
+            &[("Paper Lantern.cue", 300), ("Paper Lantern.bin", 500_000)],
+        );
+        assert_eq!(
+            relative_names(&dir, launch_candidates(&dir, "PS1")),
+            vec!["Paper Lantern.cue"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_playlist_beats_the_discs_it_lists() {
+        let dir = fixture(
+            "Velvet Requiem",
+            &[
+                ("Velvet Requiem.m3u", 60),
+                ("Velvet Requiem (Disc 1).chd", 200_000),
+                ("Velvet Requiem (Disc 2).chd", 210_000),
+            ],
+        );
+        assert_eq!(
+            relative_names(&dir, launch_candidates(&dir, "PS1")),
+            vec!["Velvet Requiem.m3u"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_ps2_mdf_is_offered_and_its_descriptor_is_not() {
+        let dir = fixture(
+            "Ashen Circuit",
+            &[("Ashen Circuit.mdf", 900_000), ("Ashen Circuit.mds", 400)],
+        );
+        assert_eq!(
+            relative_names(&dir, launch_candidates(&dir, "PS2")),
+            vec!["Ashen Circuit.mdf"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_disc_down_a_subdirectory_is_still_found() {
+        let dir = fixture("Gravel Saint", &[("discs/Gravel Saint.iso", 1_200_000)]);
+        assert_eq!(
+            find_local_game_file(&dir, "PS2").unwrap(),
+            dir.join("discs/Gravel Saint.iso")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_ps4_title_launches_its_eboot() {
+        let dir = fixture(
+            "Cobalt Vein",
+            &[
+                ("sce_sys/param.sfo", 2_000),
+                ("eboot.bin", 30_000),
+                ("data/assets.pak", 4_000_000),
+                // An add-on packaged inside the game brings its own,
+                // which is not the one to start.
+                ("addon/eboot.bin", 10_000),
+            ],
+        );
+        assert_eq!(
+            relative_names(&dir, launch_candidates(&dir, "PS4")),
+            vec!["eboot.bin", "addon/eboot.bin"]
+        );
+        assert_eq!(
+            find_local_game_file(&dir, "PS4").unwrap(),
+            dir.join("eboot.bin")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shadps4_is_given_the_game_and_told_to_go_fullscreen() {
+        assert_eq!(
+            platform_args("PS4", "/games/PS4/Cobalt Vein/eboot.bin"),
+            vec!["-f", "true", "-g", "/games/PS4/Cobalt Vein/eboot.bin"]
+        );
     }
 
     #[test]
