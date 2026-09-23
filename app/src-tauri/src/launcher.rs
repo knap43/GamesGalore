@@ -32,12 +32,12 @@ fn platform_args(platform: &str, path: &str) -> Vec<String> {
             "--".into(),
             path.into(),
         ],
-        "PC" => vec![path.into()],
-        // shadPS4 takes the game as a path to its eboot.bin, either
-        // positionally or behind -g; the explicit flag is used here so
-        // the argument cannot be mistaken for anything else, and
-        // fullscreen is a value rather than a switch.
-        "PS4" => vec!["-f".into(), "true".into(), "-g".into(), path.into()],
+        // Nothing but the path. shadPS4 takes the game positionally,
+        // and everything else about how it runs — fullscreen among
+        // them — is its own configuration rather than ours to assert
+        // over the top of on every launch. Anyone who does want a flag
+        // has Args in Settings, which goes in front of this.
+        "PC" | "PS4" => vec![path.into()],
         // Eden's standard AppImage build takes a bare positional path
         // with -f for fullscreen — no --game flag, no --fullscreen long
         // form. This is specific to that build, confirmed against a
@@ -1170,10 +1170,13 @@ mod tests {
     }
 
     #[test]
-    fn shadps4_is_given_the_game_and_told_to_go_fullscreen() {
+    fn shadps4_is_given_the_game_and_nothing_else() {
+        // How it runs is shadPS4's own configuration; a flag asserted
+        // here would sit on top of whatever was set there, on every
+        // launch.
         assert_eq!(
             platform_args("PS4", "/games/PS4/Cobalt Vein/eboot.bin"),
-            vec!["-f", "true", "-g", "/games/PS4/Cobalt Vein/eboot.bin"]
+            vec!["/games/PS4/Cobalt Vein/eboot.bin"]
         );
     }
 
@@ -1296,6 +1299,48 @@ mod tests {
                 "/games/x.cue"
             ]
         );
+    }
+
+    #[test]
+    fn the_shadps4_qt_launcher_composes_as_it_does_by_hand() {
+        // Command + Args + the game's path, which for that launcher is
+        // `-d -g <eboot>` and is why the flags live in Settings rather
+        // than in here: a different build of the same emulator wants a
+        // different pair.
+        let args: Vec<String> = ["-d", "-g"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain(platform_args(
+                "PS4",
+                "/home/knap/GamesGalore/PS4/Bloodborne/CUSA03173/eboot.bin",
+            ))
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "-d",
+                "-g",
+                "/home/knap/GamesGalore/PS4/Bloodborne/CUSA03173/eboot.bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_eboot_down_a_title_id_folder_is_the_one_launched() {
+        // How an extracted PS4 game actually sits: the game's folder
+        // holds a CUSA id folder, and the eboot is in that.
+        let dir = fixture(
+            "Bloodborne",
+            &[
+                ("CUSA03173/eboot.bin", 30_000),
+                ("CUSA03173/sce_sys/param.sfo", 2_000),
+            ],
+        );
+        assert_eq!(
+            find_local_game_file(&dir, "PS4").unwrap(),
+            dir.join("CUSA03173/eboot.bin")
+        );
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

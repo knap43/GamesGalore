@@ -21,7 +21,14 @@ async function boot() {
       case 'get_cached_library': return [];
       case 'fetch_library': return [];
       case 'get_install_states': return {};
-      case 'check_dependency': return { present: true, version: '1.0' };
+      case 'check_dependency':
+        // An AppImage that is there and refuses to run, which is how
+        // both Eden and shadPS4 are distributed and how a system with
+        // no FUSE 2 answers.
+        return args.command.endsWith('.AppImage')
+          ? { name: args.command, found: false, version: null,
+              detail: 'dlopen(): error loading libfuse.so.2 — an AppImage needs FUSE 2' }
+          : { name: args.command, found: true, version: '1.0', detail: null };
       case 'install_root_space': return (settings.install_roots && settings.install_roots.length
         ? settings.install_roots
         : [settings.install_root]).map((path, i) => ({
@@ -108,6 +115,35 @@ const press = (win, key) => win.document.dispatchEvent(
   press(win, 'ArrowDown');
   check('a text input can be left by arrowing down',
         doc.activeElement.id !== 'server-base-input', true);
+
+  // A check that fails says why, under the row it failed in: "Not
+  // found" for a file that is plainly there sends people looking for
+  // the wrong thing.
+  const pcRowEl = doc.querySelector('.emulator-row[data-platform="PC"]');
+  const detail = () => pcRowEl.querySelector('[data-detail]');
+  pcRowEl.querySelector('.emu-check').click();
+  await sleep(80);
+  check('a working command reports found', 
+        pcRowEl.querySelector('[data-status]').textContent.startsWith('Found'), true);
+  check('...with nothing to explain', detail().style.display, 'none');
+
+  const pcCommand = pcRowEl.querySelector('.emu-command');
+  pcCommand.value = '/home/you/Applications/shadPS4.AppImage';
+  pcCommand.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await sleep(50);
+  doc.querySelector('.emulator-row[data-platform="PC"] .emu-check').click();
+  await sleep(80);
+  const failed = doc.querySelector('.emulator-row[data-platform="PC"]');
+  check('a command that will not run reports not found',
+        failed.querySelector('[data-status]').textContent, 'Not found');
+  check('...and says what it said',
+        failed.querySelector('[data-detail]').textContent.includes('libfuse.so.2'), true);
+  check('...where it can be read', failed.querySelector('[data-detail]').style.display, 'block');
+
+  const restored = doc.querySelector('.emulator-row[data-platform="PC"] .emu-command');
+  restored.value = 'wine';
+  restored.dispatchEvent(new win.Event('change', { bubbles: true }));
+  await sleep(50);
 
   // The drives. The fixture's settings.json has a single install_root
   // and no list, as every one written before this did.

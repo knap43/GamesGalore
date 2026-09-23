@@ -328,7 +328,10 @@ PS1 and PS2 resolve to a disc, in the order the formats are worth opening:
 format present is offered: a `.cue`/`.bin` pair is one disc, not two, and
 handing an emulator the `.bin` of a pair gives it a track with no table of
 contents. PS4 resolves to `eboot.bin`, shallowest first, since an add-on
-packaged inside a game brings its own.
+packaged inside a game brings its own; shadPS4 is handed that path and nothing
+else, because how it runs is its own configuration and a flag asserted here
+would sit on top of whatever was set there. Args in Settings still goes in
+front, for anyone who wants one.
 
 The decision is made here against the real install directory rather than
 trusting the catalog, since the catalog describes the source library, not what
@@ -916,6 +919,50 @@ flatpak run net.pcsx2.PCSX2 -- -fullscreen -batch -- <path>
 ```
 
 where the first `--` is Flatpak's and the second is PCSX2's.
+
+### PS4, in practice
+
+The app appends the game's path and nothing else, so whatever the particular
+shadPS4 build wants goes in Args. The Qt launcher's AppImage, for instance:
+
+- **Command:** `/home/you/Applications/shadPS4QtLauncher-qt.AppImage`
+- **Args:** `-d -g`
+
+which composes to exactly what works by hand:
+
+```
+shadPS4QtLauncher-qt.AppImage -d -g '/games/PS4/Bloodborne/CUSA03173/eboot.bin'
+```
+
+No quoting is needed in the fields: the app spawns the emulator directly rather
+than through a shell, so a path with spaces in it arrives as one argument.
+
+An extracted PS4 game usually holds a title-id folder — `Bloodborne/CUSA03173/`
+— with the `eboot.bin` inside that. The search is depth-first-shallowest across
+the whole tree, so that is found without any of it being configured.
+
+### AppImages, which is how Eden and shadPS4 both come
+
+Point Command at the AppImage's path and leave Args empty. Two things commonly
+stop it working, and **Check** now names both rather than saying "Not found":
+
+- **It isn't executable.** A freshly downloaded AppImage rarely is: `chmod +x
+  Whatever.AppImage`.
+- **It needs FUSE 2.** An AppImage mounts itself with `libfuse.so.2`, which a
+  current Arch does not install — fuse3 is not a substitute. Either
+  `sudo pacman -S fuse2`, or side-step FUSE entirely:
+
+  ```sh
+  ./shadPS4.AppImage --appimage-extract      # once
+  ```
+
+  and point Command at the `squashfs-root/AppRun` that leaves behind. That runs
+  as an ordinary program, needs no FUSE, and starts faster than mounting does.
+  `--appimage-extract-and-run` in Args works too, but it unpacks the whole image
+  on every launch.
+
+For shadPS4 specifically, the AUR also carries `shadps4-bin` and `shadps4-git`,
+either of which gives you a command on PATH and makes all of the above moot.
 
 The Switch default is deliberately left as an obvious placeholder rather than a
 real binary name. Eden ships multiple builds with genuinely different CLI

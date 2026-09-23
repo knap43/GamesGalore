@@ -319,6 +319,9 @@
   .dependency-status.checking { color: var(--text-muted); }
   .dependency-status.found { color: #a8f0c6; background: rgba(52,199,132,0.14); }
   .dependency-status.missing { color: #ffb4b4; background: rgba(255,79,79,0.12); }
+  /* Why a check failed, under the row it failed in. Wraps, since the
+     useful part is often a whole sentence from another program. */
+  .check-detail { color: #ffb4b4; }
 
   .emulator-fields { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
   .emulator-fields-row { display: flex; align-items: center; gap: 8px; }
@@ -1384,9 +1387,11 @@
           Command and arguments used to launch each platform. For a native install, Command is
           just the binary name or path. For a Flatpak — likely for PCSX2 and Eden — set Command to
           <code>flatpak</code> and Args to <code>run &lt;app-id&gt; --</code>, e.g.
-          <code>run net.pcsx2.PCSX2 --</code>. PC additionally picks a runtime: Wine, or Proton
-          for the DirectX 11 and 12 titles Wine alone struggles with. "Check" tests the values
-          currently typed here, not what's saved yet.
+          <code>run net.pcsx2.PCSX2 --</code>. Args go between the command and the game's path,
+          which the app appends — so an emulator wanting its own flags, like the shadPS4 Qt
+          launcher's <code>-d -g</code>, takes them here. PC additionally picks a runtime: Wine,
+          or Proton for the DirectX 11 and 12 titles Wine alone struggles with. "Check" tests the
+          values currently typed here, not what's saved yet.
         </div>
         <div id="emulator-rows"></div>
         <div class="emulator-row" data-row="server-nsz">
@@ -2536,6 +2541,19 @@ const TAURI = window.__TAURI__ || null;
 
 const PLATFORM_LABELS = { PS1: 'PS1 — DuckStation', PS2: 'PS2 — PCSX2', PS4: 'PS4 — shadPS4', PC: 'PC — Wine or Proton', Switch: 'Switch — Eden' };
 
+/* Whatever goes between the command and the game's path, which is
+   where an emulator's own flags belong — the app appends the path and
+   nothing else. The examples are per platform because a generic one
+   teaches nobody anything: what is useful in the PS4 row is the pair
+   shadPS4's Qt launcher actually wants. */
+const ARGS_PLACEHOLDER = {
+  default: 'Args before the game path (e.g. run net.pcsx2.PCSX2 --)',
+  PS1: 'Args before the game path (e.g. run org.duckstation.DuckStation --)',
+  PS2: 'Args before the game path (e.g. run net.pcsx2.PCSX2 --)',
+  PS4: 'Args before the game path (e.g. -d -g for the shadPS4 Qt launcher)',
+  Switch: 'Args before the game path (e.g. run dev.eden_emu.eden --)',
+};
+
 /* What each runtime expects to be invoked as, so switching the pill
    also switches the command when it is still the other runtime's
    default. Someone who typed their own command keeps it. */
@@ -2641,11 +2659,12 @@ function renderEmulatorRows() {
         <div class="emulator-fields">
           ${platform === 'PC' ? runtimeFields(emu) : ''}
           <input class="setting-input emu-command" data-field="command" placeholder="Command (e.g. duckstation-qt, or flatpak)" value="${emu.command}">
-          <input class="setting-input emu-args" data-field="args_prefix" placeholder="Args before the game path (e.g. run net.pcsx2.PCSX2 --)" value="${emu.args_prefix.join(' ')}">
+          <input class="setting-input emu-args" data-field="args_prefix" placeholder="${ARGS_PLACEHOLDER[platform] || ARGS_PLACEHOLDER.default}" value="${emu.args_prefix.join(' ')}">
           <div class="emulator-fields-row">
             <input class="setting-input emu-version-flag" data-field="version_flag" placeholder="Version flag (e.g. --version)" value="${emu.version_flag}">
             <button class="browse-button emu-check" type="button" data-check="${platform}">Check</button>
           </div>
+          <div class="setting-desc check-detail" data-detail style="margin:0;display:none"></div>
         </div>
       </div>`;
   }).join('');
@@ -2704,10 +2723,23 @@ async function checkEmulator(platform) {
     const result = await TAURI.core.invoke('check_dependency', { command, argsPrefix, versionFlag });
     statusEl.textContent = result.found ? (result.version ? `Found · ${result.version}` : 'Found') : 'Not found';
     statusEl.className = `dependency-status ${result.found ? 'found' : 'missing'}`;
+    // Why it isn't found, when the backend could tell: a path with
+    // nothing at it, a file without its execute bit, an AppImage that
+    // wants a FUSE this system doesn't have. "Not found" on its own
+    // sends people looking for the wrong thing.
+    showCheckDetail(row, result.detail);
   } catch (err) {
     statusEl.textContent = 'Check failed';
     statusEl.className = 'dependency-status missing';
+    showCheckDetail(row, String(err));
   }
+}
+
+function showCheckDetail(row, detail) {
+  const el = row.querySelector('[data-detail]');
+  if (!el) return;
+  el.textContent = detail || '';
+  el.style.display = detail ? 'block' : 'none';
 }
 
 async function checkServerNsz() {
