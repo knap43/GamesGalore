@@ -107,7 +107,7 @@ def encode_segments(value: str) -> str:
 
 
 def main() -> int:
-    from library import scan_library
+    from library import KNOWN_PLATFORMS, scan_library
 
     tmp = Path(tempfile.mkdtemp())
     root = tmp / "library"
@@ -194,6 +194,9 @@ def main() -> int:
     config.LIBRARY_ROOTS = [root]
     config.LIBRARY_ROOT = root
     config.CACHE_DIR = tmp / "cache"
+    # The metadata store, which is outside the library on purpose —
+    # here that means outside `root`, beside it in the same temp tree.
+    config.METADATA_ROOT = tmp / "metadata"
     import server as srv
 
     srv.CACHE_DIR = config.CACHE_DIR
@@ -505,9 +508,9 @@ def main() -> int:
     scans = {"count": 0}
     real_scan = srv.scan_library_located
 
-    def counting_scan(path):
+    def counting_scan(path, store=None):
         scans["count"] += 1
-        return real_scan(path)
+        return real_scan(path, store)
 
     srv.scan_library_located = counting_scan
     srv._reload_catalog()          # prime it, and count that one
@@ -773,12 +776,12 @@ def main() -> int:
 
     r = client.post("/metadata/PS1/Distant%20Signal")
     check("a game on the second drive can be filled in", r.status_code, 200)
-    check("...and its files land on that drive",
-          sorted(f.name for f in far.iterdir() if f.name != "Distant Signal.cue"),
+    check("...into the store, which is one place whichever drive a game is on",
+          sorted(f.name for f in (config.METADATA_ROOT / "PS1" / "Distant Signal").iterdir()),
           ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
            "screenshot-02.jpg", "trailer.mp4"])
-    check("...rather than on the first one",
-          (root / "PS1" / "Distant Signal").exists(), False)
+    check("...leaving the drive holding nothing but the game",
+          sorted(f.name for f in far.iterdir()), ["Distant Signal.cue"])
     check("...and the catalog picks the description up from there",
           bool(srv._catalog["PS1/Distant Signal"].description), True)
 
@@ -790,7 +793,8 @@ def main() -> int:
     filled = {entry["title"] for entry in client.post("/metadata").get_json()["results"]}
     check("a library-wide fetch reaches the second drive",
           "Second Signal" in filled, True)
-    check("...writing there too", (far_two / "cover.jpg").exists(), True)
+    check("...writing to the store for it as well",
+          (config.METADATA_ROOT / "PS1" / "Second Signal" / "cover.jpg").exists(), True)
 
     shutil.rmtree(second, ignore_errors=True)
     config.LIBRARY_ROOTS = [root]
@@ -821,21 +825,80 @@ def main() -> int:
 
     filled = client.post("/metadata/PS1/Velvet%20Requiem")
     check("a loose disc can be filled in", filled.status_code, 200)
-    meta_dir = root / "PS1" / ".metadata" / "Velvet Requiem"
-    check("...into a folder of its own rather than the platform folder",
+    meta_dir = config.METADATA_ROOT / "PS1" / "Velvet Requiem"
+    check("...into the store rather than into the library",
           sorted(f.name for f in meta_dir.iterdir()),
           ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
            "screenshot-02.jpg", "trailer.mp4"])
-    check("...leaving the discs beside it untouched",
+    check("...leaving the library untouched",
           (root / "PS1" / "README.md").exists(), False)
+    check("...and the store arranged by platform",
+          meta_dir.parent.name, "PS1")
 
     srv._reload_catalog()
     check("the catalog picks that metadata up",
           srv._catalog["PS1/Velvet Requiem"].cover, "cover.jpg")
     check("...and serves it as media",
           client.get("/media/PS1/Velvet%20Requiem/cover.jpg").status_code, 200)
-    check("the metadata folder is not itself a game",
-          "PS1/.metadata" in srv._catalog, False)
+    check("nothing in the store is mistaken for a game",
+          any(gid.endswith("/.metadata") for gid in srv._catalog), False)
+
+    print("\n--- the metadata store ---")
+    # One place for every game's furniture, arranged by platform and
+    # outside the library — so the library holds games and nothing else.
+    store = config.METADATA_ROOT
+    check("a fetch writes to the store", (store / "PS1" / "Static Choir").is_dir(), True)
+    check("...arranged by platform, one directory per game",
+          all(child.is_dir() and child.name in KNOWN_PLATFORMS for child in store.iterdir()),
+          True)
+    check("...and leaves the games' own folders alone",
+          sorted(p.name for p in (root / "PS1" / "Static Choir").iterdir()),
+          ["Static Choir.bin", "Static Choir.cue"])
+
+    status = json.loads(client.get("/status").data)
+    check("status says where the store is", status["metadata_root"], str(store))
+
+    # A library filled in before the store existed keeps its covers:
+    # they are read where they are, and only moved when asked.
+    legacy = root / "PS2" / "Old Habits"
+    legacy.mkdir()
+    (legacy / "Old Habits.iso").write_bytes(b"ISO" * 100)
+    (legacy / "README.md").write_text("Old Habits (1999)\n\nFilled in years ago.")
+    (legacy / "cover.png").write_bytes(b"PNG")
+    srv._reload_catalog()
+    old_game = srv._catalog["PS2/Old Habits"]
+    check("metadata still in a game's folder is read from there",
+          (old_game.release_year, old_game.cover), (1999, "cover.png"))
+    check("...and served from there",
+          client.get("/media/PS2/Old%20Habits/cover.png").status_code, 200)
+    check("...without the README counting as a game file",
+          [f.filename for f in old_game.files], ["Old Habits.iso"])
+
+    moved = md._migrate([root], store)
+    check("migrating reports success", moved, 0)
+    check("...moving the furniture into the store",
+          sorted(p.name for p in (store / "PS2" / "Old Habits").iterdir()),
+          ["README.md", "cover.png"])
+    check("...and leaving the game behind",
+          sorted(p.name for p in legacy.iterdir()), ["Old Habits.iso"])
+
+    srv._reload_catalog()
+    migrated = srv._catalog["PS2/Old Habits"]
+    check("the catalog reads the moved metadata",
+          (migrated.release_year, migrated.cover), (1999, "cover.png"))
+    check("...and serves it from the store",
+          client.get("/media/PS2/Old%20Habits/cover.png").status_code, 200)
+
+    # Migrating again has nothing to do, and never overwrites what the
+    # store already has.
+    (legacy / "README.md").write_text("Old Habits (1999)\n\nA second copy.")
+    md._migrate([root], store)
+    check("a file the store already has is left in the library rather than lost",
+          (legacy / "README.md").exists(), True)
+    check("...and the store's own copy is untouched",
+          "years ago" in (store / "PS2" / "Old Habits" / "README.md").read_text(), True)
+    (legacy / "README.md").unlink()
+    srv._reload_catalog()
 
     print("\n--- switch keys ---")
     # The failure this exists for: nsz finds keys relative to the HOME
@@ -951,8 +1014,14 @@ def main() -> int:
           client.get("/download/PC/Nothing Here/x.exe").status_code, 404)
     check("media serves the cover",
           client.get("/media/PC/Hollow Meridian/cover.png").status_code, 200)
-    check("media refuses a non-media file",
-          client.get("/media/PC/Hollow Meridian/bin/HollowMeridian.exe").status_code, 403)
+    # Either refusal is right, and which one depends on where the
+    # game's furniture is: 403 from the extension check when /media is
+    # pointed at a game's own folder, as it still is for a library
+    # filled in before the store existed, and 404 once the store holds
+    # the metadata, since no game file is reachable from there at all.
+    check("media refuses a game file",
+          client.get("/media/PC/Hollow Meridian/bin/HollowMeridian.exe").status_code
+          in (403, 404), True)
 
     with srv.app.test_request_context():
         catalog = json.loads(client.get("/library").data)

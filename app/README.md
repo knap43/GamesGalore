@@ -17,7 +17,7 @@ from settings — and never touches the library filesystem or runs `nsz` itself.
 | `logs.rs` | The last few hundred lines this session has printed — the app's own, and each running game's, tailed out of the file its output is redirected into — kept in memory and pushed to the frontend as they happen. See **Logs** below. |
 | `settings.rs` | `settings.json` alongside `installs.json`: server address, the install directories, sound preference, per-platform emulator config, per-game launch overrides, the Wine prefix root, and cloud-save configuration. |
 | `prefix_migrate.rs` | Brings a PC game's saves inside its Wine prefix by watching a session to find out which folder it writes to. See **Cloud saves** below. |
-| `server.rs` (`fetch_metadata`, `rescan_library`) | Asks the library server to fill a game's folder from RAWG, behind the detail view's **Fetch details** button, and to rescan afterwards. The work happens on the server, which is the machine holding the library. |
+| `server.rs` (`fetch_metadata`, `rescan_library`) | Asks the library server to fill a game's entry in its metadata store from RAWG, behind the detail view's **Fetch details** button, and to rescan afterwards. The work happens on the server, which is the machine holding the library. |
 | `playtime.rs` | `playtime.json` beside them: seconds played, last played and a session count per game, recorded by the launcher. See **Playtime** below. |
 | `saves.rs` | Locates a game's save data, packs it as a tar.gz and syncs it with the server. See **Cloud saves** below. |
 

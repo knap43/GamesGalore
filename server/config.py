@@ -50,6 +50,29 @@ CACHE_DIR = Path.home() / ".cache" / "games-galore-server"
 # twice its .nsz, so this holds perhaps a dozen large Switch titles.
 CACHE_MAX_BYTES = 40 * 1024 * 1024 * 1024
 
+# Every game's catalog furniture — README.md, cover, screenshots,
+# trailer, game.json — in one place, arranged as
+# <METADATA_ROOT>/<Platform>/<Title>/.
+#
+# Outside the library roots deliberately. A library is a collection of
+# games; filling it with files this server generated means a backup of
+# the collection carries them, a second drive disagrees with the first
+# about which game has a cover, and a title that moves between drives
+# leaves its description behind. Kept here, the metadata is one thing
+# to back up, survives the library being reorganised, and leaves the
+# games exactly as they were found.
+#
+# A library filled in before this existed keeps working: metadata still
+# sitting in a game's own folder is read as before, and
+# `python metadata.py --migrate` moves it into the store when you want
+# it standardised.
+METADATA_ROOT = Path(
+    os.environ.get(
+        "METADATA_ROOT",
+        Path.home() / ".local" / "share" / "games-galore-server" / "metadata",
+    )
+)
+
 # Cloud saves live here, one directory per game, each holding a handful
 # of timestamped archives. Deliberately NOT under CACHE_DIR: everything
 # in there can be regenerated from the library by decompressing again,

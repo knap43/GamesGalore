@@ -2793,12 +2793,15 @@ async function checkServerNsz() {
 function renderServerKeys(result) {
   const el = document.getElementById('server-keys');
   if (!result || result.keys_found === undefined) { el.innerHTML = ''; return; }
-  el.innerHTML = result.keys_found
+  const store = result.metadata_root
+    ? `<div>Metadata store: <code>${result.metadata_root}</code></div>`
+    : '';
+  el.innerHTML = store + (result.keys_found
     ? `Switch keys: <code>${result.keys_path}</code>`
     : `No Switch keys the server can read — looked in <code>${result.keys_searched}</code>. `
       + 'Set <code>KEYS_FILE</code> in its <code>config.py</code>, or '
       + '<code>NSZ_KEYS</code> in its environment, to a <code>prod.keys</code> the '
-      + "account running the server can read. Switch titles won't install until then.";
+      + "account running the server can read. Switch titles won't install until then.");
 }
 
 /* The server's own drives, as it reports them. The library lives on

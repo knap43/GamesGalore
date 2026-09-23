@@ -13,16 +13,21 @@ Folder layout:
           README.md                                             <- "Title (Year)\n\nDescription..."
         <Game Title> (Disc 1).chd                                <- or discs sitting loose
         <Game Title> (Disc 2).chd                                   in the platform folder
-        .metadata/<Game Title>/README.md, cover.jpg, ...         <- their catalog furniture
+
+    <METADATA_ROOT>/                                             <- outside the library
+      PS1/ PS2/ PS4/ PC/ Switch/
+        <Game Title>/README.md, cover.jpg, game.json, ...         <- catalog furniture
 
 A disc platform accepts a game either way. A folder is the tidier
-shape and the one the metadata fetcher fills in place; loose files are
-what most rips actually look like, and they are grouped into one game
-per title by stripping the disc marker off each filename, so three
-discs of one game are one entry with three files. Their catalog
-furniture has nowhere to live beside them — the platform folder is
-shared with every other loose title — so it goes under `.metadata/`,
-which the scanner skips when looking for games.
+shape; loose files are what most rips actually look like, and they are
+grouped into one game per title by stripping the disc marker off each
+filename, so three discs of one game are one entry with three files.
+
+The catalog furniture is not in the library at all. It lives in the
+metadata store, arranged by platform, so the library holds games and
+nothing else — see `Located` below. Metadata still sitting in a game's
+own folder, from a library filled in before the store existed, is read
+from there and left alone; `metadata.py --migrate` moves it across.
 
 Only the screenshots, trailer and README are required to sit at the top
 level of a game's folder; those three are catalog metadata, and
@@ -183,41 +188,79 @@ class Game:
 
 @dataclass
 class Located:
-    """
-    A game and the two directories it answers from.
+    '''
+    A game and the directories it answers from.
 
     `content_dir` holds the game's own files, and every filename in
-    `game.files` is relative to it. `media_dir` holds the README, the
-    cover, the screenshots and the game.json — the catalog furniture,
-    which the fetcher writes and the client reads.
+    `game.files` is relative to it.
 
-    They are the same directory for a game that lives in one, which is
-    most of them. They differ for a disc sitting loose in a platform
-    folder: its content is the platform folder, shared with every other
-    loose title there, so its metadata goes in a folder of its own
-    under `.metadata/` rather than into a directory full of somebody
-    else's discs.
-    """
-    game: "Game"
+    `metadata_dir` is where this game's catalog furniture belongs —
+    `<METADATA_ROOT>/<Platform>/<Title>/` — and is where the fetcher
+    writes, always. It is outside every library root on purpose: a
+    library is somebody's collection of games, and filling it with
+    README files and cover art is writing into their collection.
+
+    `media_dir` is where the furniture actually was found, which is the
+    same directory unless a game still carries its own from before the
+    store existed. That legacy layout is read, never written; the
+    migrator in metadata.py moves it across when asked.
+    '''
+    game: 'Game'
     content_dir: Path
+    metadata_dir: Path
     media_dir: Path
 
 
-# Where a loose game's catalog furniture lives, per platform folder.
-# Dot-prefixed so the scanner passes over it as a game, and so it sorts
-# and hides out of the way of the library itself.
-LOOSE_METADATA_DIR = ".metadata"
+# Where a loose game's furniture lived for exactly one version of this
+# server, before the store below. Read so that nothing vanishes, and
+# moved out by `metadata.py --migrate`.
+LOOSE_METADATA_DIR = '.metadata'
 
 
-def scan_library(root: Path) -> list:
-    """Every game under `root`. See `scan_library_located` for the
-    directories each one answers from."""
-    return [located.game for located in scan_library_located(root)]
+def is_metadata_file(path: Path) -> bool:
+    '''
+    Whether a file is catalog furniture — the README, the sidecar, a
+    screenshot or cover, a trailer. The one definition of what belongs
+    in the store, shared by the scanner and the migrator so they cannot
+    disagree about what to move.
+    '''
+    return (
+        path.name in (README_NAME, SIDECAR_NAME)
+        or path.suffix.lower() in IMAGE_EXTENSIONS
+        or _is_trailer_file(path.name)
+    )
 
 
-def scan_library_located(root: Path) -> list:
+def metadata_dir_for(metadata_root: Optional[Path], platform: str, title: str) -> Optional[Path]:
+    '''Where this game's catalog furniture belongs, store and all.'''
+    if metadata_root is None:
+        return None
+    return Path(metadata_root) / platform / title
+
+
+def has_metadata(directory: Optional[Path]) -> bool:
+    '''
+    Whether a directory holds any catalog furniture at all.
+
+    What decides which of two directories a game's cover is read from,
+    so it asks the only question that matters: is there anything here?
+    '''
+    if directory is None or not directory.is_dir():
+        return False
+    return any(
+        path.is_file() and is_metadata_file(path) for path in directory.iterdir()
+    )
+
+
+def scan_library(root: Path, metadata_root: Optional[Path] = None) -> list:
+    '''Every game under `root`. See `scan_library_located` for the
+    directories each one answers from.'''
+    return [located.game for located in scan_library_located(root, metadata_root)]
+
+
+def scan_library_located(root: Path, metadata_root: Optional[Path] = None) -> list:
     if not root.is_dir():
-        raise FileNotFoundError(f"Library root does not exist: {root}")
+        raise FileNotFoundError(f'Library root does not exist: {root}')
 
     located = []
     for platform_dir in sorted(root.iterdir()):
@@ -226,19 +269,24 @@ def scan_library_located(root: Path) -> list:
         platform = platform_dir.name
 
         for game_dir in sorted(platform_dir.iterdir()):
-            # A dot directory is the library's own furniture, not a
-            # game: .metadata holds what the loose discs below need.
-            if not game_dir.is_dir() or game_dir.name.startswith("."):
+            # A dot directory is furniture rather than a game — the
+            # store's old in-library home, most likely.
+            if not game_dir.is_dir() or game_dir.name.startswith('.'):
                 continue
-            game = _read_game_folder(game_dir, platform)
+            metadata = metadata_dir_for(metadata_root, platform, game_dir.name)
+            # The store if it has anything; the game's own folder
+            # otherwise, which is where every library filled in before
+            # the store existed still keeps its covers.
+            media = metadata if has_metadata(metadata) else game_dir
+            game = _read_game_folder(game_dir, platform, media)
             if game is not None:
-                located.append(Located(game, game_dir, game_dir))
+                located.append(Located(game, game_dir, metadata or game_dir, media))
 
-        located.extend(_loose_games(platform_dir, platform))
+        located.extend(_loose_games(platform_dir, platform, metadata_root))
     return located
 
 
-def _loose_games(platform_dir: Path, platform: str) -> list:
+def _loose_games(platform_dir: Path, platform: str, metadata_root: Optional[Path]) -> list:
     """
     Games that are files in the platform folder rather than folders of
     their own — which is how most people's PS1 and PS2 rips actually
@@ -269,12 +317,15 @@ def _loose_games(platform_dir: Path, platform: str) -> list:
         # that isn't there — a .cue whose .bin was deleted, say.
         if not any(f.suffix.lower() in extensions for f in files):
             continue
-        media_dir = platform_dir / LOOSE_METADATA_DIR / title
+        metadata = metadata_dir_for(metadata_root, platform, title)
+        legacy = platform_dir / LOOSE_METADATA_DIR / title
+        media = metadata if has_metadata(metadata) else legacy
         located.append(
             Located(
-                _read_loose_game(platform_dir, media_dir, platform, title, files),
+                _read_loose_game(platform_dir, media, platform, title, files),
                 platform_dir,
-                media_dir,
+                metadata or legacy,
+                media,
             )
         )
     return located
@@ -318,11 +369,17 @@ def _rank_disc_files(files: list, extensions: tuple) -> list:
     return sorted(files, key=rank)
 
 
-def _read_game_folder(game_dir: Path, platform: str) -> Optional[Game]:
+def _read_game_folder(
+    game_dir: Path, platform: str, media_dir: Optional[Path] = None
+) -> Optional[Game]:
     title = game_dir.name
-    release_year, description = _read_readme(game_dir / README_NAME)
-    screenshots = _find_screenshots(game_dir)
-    extra = _read_sidecar(game_dir / SIDECAR_NAME)
+    # The furniture is read from wherever it is — the store for a
+    # library filled in since it existed, the game's own folder for one
+    # filled in before — while the files are always read from the game.
+    media_dir = media_dir or game_dir
+    release_year, description = _read_readme(media_dir / README_NAME)
+    screenshots = _find_screenshots(media_dir) if media_dir.is_dir() else []
+    extra = _read_sidecar(media_dir / SIDECAR_NAME)
 
     return Game(
         id=f"{platform}/{title}",
@@ -336,7 +393,7 @@ def _read_game_folder(game_dir: Path, platform: str) -> Optional[Game]:
         files=_find_game_files(game_dir, platform),
         screenshots=screenshots,
         cover=_pick_cover(screenshots),
-        trailer=_find_trailer(game_dir),
+        trailer=_find_trailer(media_dir) if media_dir.is_dir() else None,
         genre=extra.get("genre"),
         tags=extra.get("tags") or [],
         players=extra.get("players"),
