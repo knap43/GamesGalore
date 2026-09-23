@@ -1302,6 +1302,48 @@ mod tests {
     }
 
     #[test]
+    fn the_shadps4_qt_launcher_composes_as_it_does_by_hand() {
+        // Command + Args + the game's path, which for that launcher is
+        // `-d -g <eboot>` and is why the flags live in Settings rather
+        // than in here: a different build of the same emulator wants a
+        // different pair.
+        let args: Vec<String> = ["-d", "-g"]
+            .iter()
+            .map(|s| s.to_string())
+            .chain(platform_args(
+                "PS4",
+                "/home/knap/GamesGalore/PS4/Bloodborne/CUSA03173/eboot.bin",
+            ))
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "-d",
+                "-g",
+                "/home/knap/GamesGalore/PS4/Bloodborne/CUSA03173/eboot.bin"
+            ]
+        );
+    }
+
+    #[test]
+    fn an_eboot_down_a_title_id_folder_is_the_one_launched() {
+        // How an extracted PS4 game actually sits: the game's folder
+        // holds a CUSA id folder, and the eboot is in that.
+        let dir = fixture(
+            "Bloodborne",
+            &[
+                ("CUSA03173/eboot.bin", 30_000),
+                ("CUSA03173/sce_sys/param.sfo", 2_000),
+            ],
+        );
+        assert_eq!(
+            find_local_game_file(&dir, "PS4").unwrap(),
+            dir.join("CUSA03173/eboot.bin")
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn shell_quote_escapes_embedded_quotes_and_spaces() {
         assert_eq!(
             shell_quote(&["/games/Moth & Ember/it's.exe".to_string()]),

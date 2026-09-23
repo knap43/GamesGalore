@@ -1546,7 +1546,19 @@ mod tests {
         let (base, roots) = two_roots("unused");
         let untouched = roots[0].join("PC").join("Ferrofluid");
         assert!(!untouched.exists());
-        assert_eq!(available_bytes(&untouched), available_bytes(&roots[0]));
+
+        // The same filesystem, so the same answer — near enough.
+        // Asserting equality outright made this flaky: the two calls
+        // are moments apart, and anything else writing to the disk in
+        // between moves the number by a block or two.
+        let (Some(future), Some(root)) = (available_bytes(&untouched), available_bytes(&roots[0]))
+        else {
+            panic!("both paths should report the filesystem they are on");
+        };
+        assert!(
+            future.abs_diff(root) < 64 * 1024 * 1024,
+            "{future} and {root} should be the same filesystem"
+        );
         std::fs::remove_dir_all(&base).unwrap();
     }
 

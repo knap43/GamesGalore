@@ -920,6 +920,27 @@ flatpak run net.pcsx2.PCSX2 -- -fullscreen -batch -- <path>
 
 where the first `--` is Flatpak's and the second is PCSX2's.
 
+### PS4, in practice
+
+The app appends the game's path and nothing else, so whatever the particular
+shadPS4 build wants goes in Args. The Qt launcher's AppImage, for instance:
+
+- **Command:** `/home/you/Applications/shadPS4QtLauncher-qt.AppImage`
+- **Args:** `-d -g`
+
+which composes to exactly what works by hand:
+
+```
+shadPS4QtLauncher-qt.AppImage -d -g '/games/PS4/Bloodborne/CUSA03173/eboot.bin'
+```
+
+No quoting is needed in the fields: the app spawns the emulator directly rather
+than through a shell, so a path with spaces in it arrives as one argument.
+
+An extracted PS4 game usually holds a title-id folder — `Bloodborne/CUSA03173/`
+— with the `eboot.bin` inside that. The search is depth-first-shallowest across
+the whole tree, so that is found without any of it being configured.
+
 ### AppImages, which is how Eden and shadPS4 both come
 
 Point Command at the AppImage's path and leave Args empty. Two things commonly
