@@ -105,14 +105,58 @@ systemctl enable --now games-galore-server
 
 ```
 <each LIBRARY_ROOTS entry>/
-  PS1/  PS2/  PC/  Switch/
+  PS1/  PS2/  PS4/  PC/  Switch/
     <Game Title>/
-      *.bin/*.cue | *.iso | *.nsz | *.nsp            <- game file(s)
-      <a whole installed tree, for PC>               <- see below
-      *.png / *.jpg                                  <- loose screenshots
-      *trailer*.mp4                                  <- optional
-      README.md                                      <- "Title (Year)\n\nDescription..."
+      *.cue/*.bin | *.chd | *.iso | *.mdf | *.nsz | *.nsp  <- game file(s)
+      <a whole installed tree, for PC and PS4>             <- see below
+      *.png / *.jpg                                        <- loose screenshots
+      *trailer*.mp4                                        <- optional
+      README.md                                            <- "Title (Year)\n\nDescription..."
+    <Game Title> (Disc 1).chd                              <- or discs sitting loose
+    <Game Title> (Disc 2).chd                                 in the platform folder
+    .metadata/<Game Title>/                                <- their catalog furniture
 ```
+
+### Discs: either shape, most formats
+
+A disc platform takes a game either way.
+
+**A folder per game** is the tidier shape, and the one the metadata fetcher
+fills in place. The entry point is whichever disc format is worth opening
+first, searched through the whole folder rather than just its top level — so a
+game whose discs sit in a `discs/` subdirectory is found like any other.
+
+**Files loose in the platform folder** is what most rips actually look like,
+and they are now read as games too. Discs of one game become one game: the disc
+marker is taken off each filename — `(Disc 2)`, `[CD 1]`, `- Disk 3 of 4` — and
+what remains is the title they share. So
+
+```
+PS1/Velvet Requiem (Disc 1).chd
+PS1/Velvet Requiem (Disc 2).chd
+PS1/Velvet Requiem (Disc 3).chd
+```
+
+is one catalog entry with three files, not three entries. A `.cue` and the
+`.bin` it describes group the same way, as does an `.mdf` with its `.mds`.
+
+Their README, cover, screenshots and `game.json` have nowhere to sit beside
+them — the platform folder belongs to every loose title in it — so they live in
+`<platform>/.metadata/<Title>/`, which the fetcher writes and the scanner skips
+when looking for games. Dot directories are never games.
+
+**Formats**, best entry point first:
+
+| Platform | Opened |
+| --- | --- |
+| PS1 | `.m3u`, `.cue`, `.chd`, `.pbp`, `.ecm`, `.iso`, `.img`, `.mdf`, `.bin` |
+| PS2 | `.m3u`, `.iso`, `.chd`, `.cso`, `.zso`, `.gz`, `.cue`, `.mdf`, `.nrg`, `.img`, `.bin` |
+| PS4 | the `eboot.bin` of an extracted game (a `.pkg` is listed, but shadPS4 installs those rather than booting them) |
+| Switch | `.nsp`, or `.nsz` decompressed on the way out |
+| PC | the installed tree, entry point picked by name, depth and size |
+
+An `.m3u` beats the discs it lists, and a `.cue` beats the `.bin` it describes:
+both are one disc named twice otherwise.
 
 A game's id is `<Platform>/<Title>`. The cover is whichever screenshot has
 "cover" in its filename, falling back to the first alphabetically.

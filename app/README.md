@@ -319,10 +319,20 @@ For PC it applies the same ranking the server's `_pick_pc_executable` uses when
 cataloguing: prefer an executable that isn't an installer or bundled runtime
 (`unins*`, `vcredist`, `dxsetup`, crash handlers), then one whose name matches
 the game's own folder title, then the shallowest, then the largest, breaking
-ties on name so the choice is stable across launches. PS1/PS2 still resolve to
-the `.cue`. The decision is made here against the real install directory rather
-than trusting the catalog, since the catalog describes the source library, not
-what actually landed on this disk.
+ties on name so the choice is stable across launches.
+
+PS1 and PS2 resolve to a disc, in the order the formats are worth opening:
+`.m3u` (which names a whole set), then `.cue`, then `.chd`, then the rest —
+`.pbp`, `.ecm`, `.iso`, `.img`, `.mdf`, `.bin` for PS1; `.iso`, `.chd`, `.cso`,
+`.zso`, `.gz`, `.cue`, `.mdf`, `.nrg`, `.img`, `.bin` for PS2. Only the best
+format present is offered: a `.cue`/`.bin` pair is one disc, not two, and
+handing an emulator the `.bin` of a pair gives it a track with no table of
+contents. PS4 resolves to `eboot.bin`, shallowest first, since an add-on
+packaged inside a game brings its own.
+
+The decision is made here against the real install directory rather than
+trusting the catalog, since the catalog describes the source library, not what
+actually landed on this disk.
 
 The two rankings are duplicated deliberately — one is in Python on the server,
 the other in Rust on the client — so if you change the exclusion list, change
@@ -331,7 +341,7 @@ both. `NON_GAME_EXE_MARKERS` exists under that name in each.
 **When the automatic choice is wrong, the detail view offers a picker.** Some
 titles have more than one thing worth launching: a separate 32- and 64-bit
 executable, a launcher beside the game proper, or — for PS1/PS2 — a multi-disc
-title with a `.cue` per disc. `list_launch_candidates` returns that list for an
+title with one file per disc. `list_launch_candidates` returns that list for an
 installed title, ranked, and the Play row grows a dropdown whenever there are
 two or more. One candidate is not a choice, so the picker stays hidden, which
 is the common case.
@@ -1030,7 +1040,8 @@ toolchain.
 
 `cargo test` covers, against real temporary directories where files are
 involved: `launcher.rs`'s file resolution — the PC executable search across
-subdirectories, its exclusion of installers, the PS1/PS2 `.cue` rule, stability
+subdirectories, its exclusion of installers, the PS1/PS2 disc ranking, the PS4
+eboot search, stability
 of the Switch pick, argument quoting — and `install_state.rs`'s progress
 arithmetic, path-segment encoding, and error-detail extraction, plus
 `catalog_cache.rs`'s merge rules — live entries winning over cached ones, an

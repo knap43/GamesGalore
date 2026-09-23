@@ -99,7 +99,8 @@ Settings also has a **View logs** button, which shows what this session has
 printed — the command each game was launched with, where each install went,
 anything that went wrong, and the running game's own output — whether or not the
 app was started from a terminal.
-Nothing works until those two are set. Emulator commands for each platform have
+Nothing works until those two are set. The platforms are PS1 (DuckStation), PS2
+(PCSX2), PS4 (shadPS4), PC (Wine or Proton) and Switch (Eden). Emulator commands for each platform have
 sensible defaults and are worth checking if you use Flatpaks. PC titles run
 through Wine by default and can be switched to Proton in the same row, which
 needs `umu-launcher` from `extra` and no Steam at all.

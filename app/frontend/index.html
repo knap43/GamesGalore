@@ -1616,7 +1616,7 @@ const VIRTUAL_ROW_BUFFER = 3; // extra rows rendered above/below the viewport.
                                // without rendering (and holding in GPU memory)
                                // far more cards than are ever actually useful.
 
-const PLATFORM_ORDER = ['PS1', 'PS2', 'PC', 'Switch'];
+const PLATFORM_ORDER = ['PS1', 'PS2', 'PS4', 'PC', 'Switch'];
 
 /* Generic per-genre blurb templates — used only for mock games, which
    have no real description. Real games carry an actual `description`
@@ -2510,7 +2510,7 @@ let state = {
  * --------------------------------------------------------------- */
 const TAURI = window.__TAURI__ || null;
 
-const PLATFORM_LABELS = { PS1: 'PS1 — DuckStation', PS2: 'PS2 — PCSX2', PC: 'PC — Wine or Proton', Switch: 'Switch — Eden' };
+const PLATFORM_LABELS = { PS1: 'PS1 — DuckStation', PS2: 'PS2 — PCSX2', PS4: 'PS4 — shadPS4', PC: 'PC — Wine or Proton', Switch: 'Switch — Eden' };
 
 /* What each runtime expects to be invoked as, so switching the pill
    also switches the command when it is still the other runtime's
@@ -2522,6 +2522,7 @@ const RUNTIME_COMMANDS = { wine: 'wine', proton: 'umu-run' };
 const DEFAULT_EMULATORS = {
   PS1: { command: 'duckstation-qt', args_prefix: [], version_flag: '-version', runtime: 'wine', proton_path: '' },
   PS2: { command: 'pcsx2-qt', args_prefix: [], version_flag: '--version', runtime: 'wine', proton_path: '' },
+  PS4: { command: 'shadps4', args_prefix: [], version_flag: '--help', runtime: 'wine', proton_path: '' },
   PC: { command: 'wine', args_prefix: [], version_flag: '--version', runtime: 'wine', proton_path: '' },
   Switch: { command: 'eden-cli', args_prefix: [], version_flag: '--version', runtime: 'wine', proton_path: '' },
 };

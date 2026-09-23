@@ -224,6 +224,18 @@ fn default_emulators() -> HashMap<String, EmulatorConfig> {
             proton_path: String::new(),
         },
     );
+    // shadPS4 has no --version; CLI11 gives it --help, which prints and
+    // exits 0, which is what the dependency check actually asks for.
+    m.insert(
+        "PS4".to_string(),
+        EmulatorConfig {
+            command: "shadps4".to_string(),
+            args_prefix: vec![],
+            version_flag: "--help".to_string(),
+            runtime: default_runtime(),
+            proton_path: String::new(),
+        },
+    );
     m.insert(
         "Switch".to_string(),
         EmulatorConfig {

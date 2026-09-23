@@ -13,6 +13,7 @@ Run from this directory, with flask installed:
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -69,6 +70,33 @@ def build_library(root: Path) -> None:
     write("PS1/Static Choir/Static Choir.cue", 300)
     write("PS1/Static Choir/Static Choir.bin", 600_000)
 
+    # A folder of discs rather than a .cue/.bin pair, which is what a
+    # CHD rip of a multi-disc game looks like.
+    write("PS1/Chrono Harbour/Chrono Harbour (Disc 1).chd", 400_000)
+    write("PS1/Chrono Harbour/Chrono Harbour (Disc 2).chd", 380_000)
+
+    # Discs loose in the platform folder — no folder of their own, one
+    # game across three files.
+    write("PS1/Velvet Requiem (Disc 1).chd", 200_000)
+    write("PS1/Velvet Requiem (Disc 2).chd", 210_000)
+    write("PS1/Velvet Requiem (Disc 3).chd", 190_000)
+    # A single loose disc, and a .cue/.bin pair sitting loose beside it.
+    write("PS1/Neon Vigil.iso", 700_000)
+    write("PS1/Paper Lantern.cue", 300)
+    write("PS1/Paper Lantern.bin", 500_000)
+
+    # PS2: an .mdf with its .mds descriptor, and an .iso in a
+    # subdirectory of its game folder.
+    write("PS2/Ashen Circuit/Ashen Circuit.mdf", 900_000)
+    write("PS2/Ashen Circuit/Ashen Circuit.mds", 400)
+    write("PS2/Gravel Saint/discs/Gravel Saint.iso", 1_200_000)
+    write("PS2/Lowlight Drive.iso", 1_100_000)
+
+    # PS4: an extracted game, where the thing to launch is eboot.bin.
+    write("PS4/Cobalt Vein/eboot.bin", 30_000)
+    write("PS4/Cobalt Vein/sce_sys/param.sfo", 2_000)
+    write("PS4/Cobalt Vein/data/assets.pak", 4_000_000)
+
     write("Switch/198X/base.nsp", 1_000)
     write("Switch/198X/update.nsz", 2_000)
 
@@ -119,6 +147,46 @@ def main() -> int:
     check("Switch: both files, conversion flagged per file",
           sorted((f.filename, f.size_bytes, f.needs_conversion) for f in switch.files),
           [("base.nsp", 1000, False), ("update.nsz", 2000, True)])
+
+    print("\n--- disc platforms ---")
+    # The shapes a real library is in: a .cue/.bin pair, a folder of
+    # CHDs, discs loose in the platform folder, an .mdf with its .mds,
+    # an .iso down a subdirectory. Every one of these used to be
+    # invisible unless it had a .cue at its top level.
+    harbour = games["PS1/Chrono Harbour"]
+    check("a folder of CHDs is a game", [f.filename for f in harbour.files],
+          ["Chrono Harbour (Disc 1).chd", "Chrono Harbour (Disc 2).chd"])
+
+    velvet = games["PS1/Velvet Requiem"]
+    check("discs loose in the platform folder are one game, not three",
+          [f.filename for f in velvet.files],
+          ["Velvet Requiem (Disc 1).chd", "Velvet Requiem (Disc 2).chd",
+           "Velvet Requiem (Disc 3).chd"])
+    check("...titled by what the discs have in common", velvet.title, "Velvet Requiem")
+    check("...and sized as the sum of them",
+          sum(f.size_bytes for f in velvet.files), 600_000)
+
+    check("a single loose .iso is a game", "PS1/Neon Vigil" in games, True)
+    lantern = games["PS1/Paper Lantern"]
+    check("a loose .cue/.bin pair is one game led by the .cue",
+          [f.filename for f in lantern.files],
+          ["Paper Lantern.cue", "Paper Lantern.bin"])
+
+    ashen = games["PS2/Ashen Circuit"]
+    check("an .mdf leads its .mds rather than the other way round",
+          [f.filename for f in ashen.files],
+          ["Ashen Circuit.mdf", "Ashen Circuit.mds"])
+    gravel = games["PS2/Gravel Saint"]
+    check("a disc down a subdirectory is still the entry point",
+          gravel.files[0].filename, "discs/Gravel Saint.iso")
+    check("a loose PS2 .iso is a game", "PS2/Lowlight Drive" in games, True)
+
+    cobalt = games["PS4/Cobalt Vein"]
+    check("a PS4 game leads with its eboot.bin",
+          cobalt.files[0].filename, "eboot.bin")
+    check("...and carries the rest of the extracted tree",
+          sorted(f.filename for f in cobalt.files),
+          ["data/assets.pak", "eboot.bin", "sce_sys/param.sfo"])
 
     print("\n--- routes and install ---")
     import config
@@ -435,13 +503,13 @@ def main() -> int:
     # /library used to rescan the whole tree on every call. It now
     # rescans when the tree looks different, and not otherwise.
     scans = {"count": 0}
-    real_scan = srv.scan_library
+    real_scan = srv.scan_library_located
 
     def counting_scan(path):
         scans["count"] += 1
         return real_scan(path)
 
-    srv.scan_library = counting_scan
+    srv.scan_library_located = counting_scan
     srv._reload_catalog()          # prime it, and count that one
     before = scans["count"]
 
@@ -473,7 +541,7 @@ def main() -> int:
 
     shutil.rmtree(new_game)
     srv._reload_catalog()
-    srv.scan_library = real_scan
+    srv.scan_library_located = real_scan
 
     print("\n--- metadata sidecar ---")
     # Everything else about a game is inferred from its folder; this is
@@ -727,6 +795,47 @@ def main() -> int:
     shutil.rmtree(second, ignore_errors=True)
     config.LIBRARY_ROOTS = [root]
     srv._reload_catalog()
+
+    print("\n--- a loose disc through the routes ---")
+    # A loose disc's files come from the platform folder while its
+    # cover and README have nowhere to sit beside them, so they go
+    # under .metadata/. Both halves have to resolve.
+    srv._reload_catalog()
+    disc = client.get("/download/PS1/Velvet%20Requiem/Velvet%20Requiem%20(Disc%202).chd")
+    check("a loose disc downloads", disc.status_code, 200)
+    check("...the right one of the set", len(disc.data), 210_000)
+    check("a file from another loose game is refused",
+          client.get("/download/PS1/Velvet%20Requiem/Neon%20Vigil.iso").status_code, 404)
+
+    # The archive is built from the catalog's file list, not from the
+    # directory — which for a loose disc is a platform folder full of
+    # other people's games.
+    import tarfile as tar_module
+    archived = client.get("/archive/PS1/Velvet%20Requiem")
+    check("a loose game archives", archived.status_code, 200)
+    with tar_module.open(fileobj=io.BytesIO(archived.data), mode="r|") as bundle:
+        names = sorted(member.name for member in bundle)
+    check("...carrying its own discs and nothing else", names,
+          ["Velvet Requiem (Disc 1).chd", "Velvet Requiem (Disc 2).chd",
+           "Velvet Requiem (Disc 3).chd"])
+
+    filled = client.post("/metadata/PS1/Velvet%20Requiem")
+    check("a loose disc can be filled in", filled.status_code, 200)
+    meta_dir = root / "PS1" / ".metadata" / "Velvet Requiem"
+    check("...into a folder of its own rather than the platform folder",
+          sorted(f.name for f in meta_dir.iterdir()),
+          ["README.md", "cover.jpg", "game.json", "screenshot-01.jpg",
+           "screenshot-02.jpg", "trailer.mp4"])
+    check("...leaving the discs beside it untouched",
+          (root / "PS1" / "README.md").exists(), False)
+
+    srv._reload_catalog()
+    check("the catalog picks that metadata up",
+          srv._catalog["PS1/Velvet Requiem"].cover, "cover.jpg")
+    check("...and serves it as media",
+          client.get("/media/PS1/Velvet%20Requiem/cover.jpg").status_code, 200)
+    check("the metadata folder is not itself a game",
+          "PS1/.metadata" in srv._catalog, False)
 
     print("\n--- switch keys ---")
     # The failure this exists for: nsz finds keys relative to the HOME
